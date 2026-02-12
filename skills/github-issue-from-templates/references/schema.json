@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "github-issue-template-config",
+  "title": "GitHub Issue Template Configuration",
+  "description": "Schema for template config files that drive the github-issue-from-templates skill. Config files contain only metadata, triggers, defaults, and formatting rules — field definitions are fetched dynamically from the GitHub template at runtime.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "description",
+    "version",
+    "triggers",
+    "repository",
+    "templateSource",
+    "labels"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for this template config (e.g., 'general', 'a11y')."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name shown during template selection."
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description of what this template is for."
+    },
+    "version": {
+      "type": "string",
+      "description": "Semver version of this config file.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "triggers": {
+      "type": "object",
+      "description": "Keywords and description used to match user requests to this template.",
+      "required": ["keywords", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "keywords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Case-insensitive keywords that trigger this template (e.g., 'ticket', 'bug', 'a11y')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Natural-language description of when this template should be used."
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "description": "GitHub repository where issues are created.",
+      "required": ["owner", "repo"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": { "type": "string" },
+        "repo": { "type": "string" }
+      }
+    },
+    "templateSource": {
+      "type": "object",
+      "description": "Location and format of the GitHub issue template to fetch at runtime.",
+      "required": ["path", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Repo-relative path to the template file (e.g., '.github/ISSUE_TEMPLATE/my-template.yml')."
+        },
+        "format": {
+          "type": "string",
+          "enum": ["yml", "md"],
+          "description": "'yml' for form-based templates (YAML body array), 'md' for frontmatter + markdown body templates."
+        }
+      }
+    },
+    "title": {
+      "type": "object",
+      "description": "Title configuration. By default the title pattern is extracted from the fetched template. Use 'override' only if customization is needed.",
+      "additionalProperties": false,
+      "properties": {
+        "override": {
+          "type": "string",
+          "description": "Custom title pattern that replaces the one from the template. Placeholders are substituted with gathered field values using reasoning."
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Key-value constants applied unless the user specifies otherwise (e.g., team name, contact person).",
+      "additionalProperties": { "type": "string" }
+    },
+    "fieldDefaults": {
+      "type": "object",
+      "description": "Per-field overrides keyed by the field's id (from the fetched template). Does NOT define fields — only adds metadata to fields that already exist in the template.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "Default value to pre-fill for this field.",
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "gatheringNotes": {
+            "type": "string",
+            "description": "Guidance for the skill on how to gather or present this field to the user."
+          }
+        }
+      }
+    },
+    "fieldSkipConditions": {
+      "type": "object",
+      "description": "Conditions under which a field should be skipped (not prompted). Keyed by field id.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "onlyWhen": {
+            "type": "object",
+            "description": "Only prompt for this field when the referenced field has the specified value.",
+            "required": ["fieldId", "equals"],
+            "additionalProperties": false,
+            "properties": {
+              "fieldId": {
+                "type": "string",
+                "description": "The id of the field whose value determines whether to show this field."
+              },
+              "equals": {
+                "type": "string",
+                "description": "The value the referenced field must have for this field to be shown."
+              }
+            }
+          }
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "description": "Label configuration for created issues.",
+      "required": ["default"],
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Labels always applied to the issue."
+        },
+        "conditional": {
+          "type": "array",
+          "description": "Labels applied based on field values or user context.",
+          "items": {
+            "type": "object",
+            "required": ["condition"],
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "A single label to apply when the condition is met."
+              },
+              "condition": {
+                "type": "object",
+                "required": ["type"],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["keyword", "fieldValue", "fieldTransform"],
+                    "description": "'keyword' matches words in user request, 'fieldValue' matches a specific field value, 'fieldTransform' derives the label from a field value."
+                  },
+                  "keywords": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Keywords to match in user request (for type 'keyword')."
+                  },
+                  "fieldId": {
+                    "type": "string",
+                    "description": "Field id to check (for types 'fieldValue' and 'fieldTransform')."
+                  },
+                  "value": {
+                    "type": "string",
+                    "description": "Value to match (for type 'fieldValue')."
+                  },
+                  "labels": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Labels to apply when the condition is met (for type 'fieldValue'). Overrides 'label' if both are present."
+                  },
+                  "transform": {
+                    "type": "string",
+                    "enum": ["lowercase-hyphenate"],
+                    "description": "How to derive the label from the field value (for type 'fieldTransform'). 'lowercase-hyphenate' converts 'Document Status' to 'document-status'."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "assignees": {
+      "type": "object",
+      "description": "Assignee configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "GitHub usernames to assign by default."
+        },
+        "promptUser": {
+          "type": "boolean",
+          "description": "If true, ask the user if they want to add additional assignees."
+        }
+      }
+    },
+    "projectBoard": {
+      "type": "object",
+      "description": "GitHub project board configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the GitHub project board."
+        },
+        "defaultStatus": {
+          "type": "string",
+          "description": "Default status column for the new issue."
+        }
+      }
+    },
+    "linkFormatting": {
+      "type": "object",
+      "description": "Rules for formatting links in the issue body.",
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["match", "format", "description"],
+            "additionalProperties": false,
+            "properties": {
+              "match": {
+                "type": "string",
+                "description": "Pattern description for when this rule applies (e.g., 'GitHub issue/PR URLs')."
+              },
+              "format": {
+                "type": "string",
+                "description": "How to format the link (e.g., 'raw URL as list item', 'markdown [text](url)')."
+              },
+              "description": {
+                "type": "string",
+                "description": "Explanation of why this formatting is used."
+              },
+              "customText": {
+                "type": "string",
+                "description": "Specific link text to use (e.g., '(see design)')."
+              }
+            }
+          }
+        }
+      }
+    },
+    "acceptanceCriteria": {
+      "type": "object",
+      "description": "Default acceptance criteria configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "defaultItems": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Acceptance criteria items always included unless the user removes them."
+        },
+        "formatting": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "style": {
+              "type": "string",
+              "enum": ["checklist", "bullets"],
+              "description": "How to render acceptance criteria items."
+            },
+            "avoidPrefixes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Prefixes to avoid on criteria items (e.g., 'Design:', 'Testing:')."
+            }
+          }
+        }
+      }
+    },
+    "postCreation": {
+      "type": "object",
+      "description": "What to display after issue creation.",
+      "additionalProperties": false,
+      "properties": {
+        "displayFormat": {
+          "type": "string",
+          "description": "Template for the success message. Use {issueNumber} and {issueUrl} as placeholders."
+        },
+        "additionalNotes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra notes to display after creation (e.g., alternative workflows)."
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "General notes or reminders for the skill when using this template."
+    }
+  }
+}

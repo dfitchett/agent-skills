@@ -20,13 +20,19 @@ Create GitHub issues by fetching field definitions from your repo's issue templa
 Install all skills:
 
 ```bash
-npx skills add dfitchett/skills
+npx skills add dfitchett/agent-skills
 ```
 
 Install a single skill:
 
 ```bash
-npx skills add dfitchett/skills/github-issue-from-templates
+npx skills add dfitchett/agent-skills --skill github-issue-from-templates
+```
+
+_note: sometimes Claude code has issues finding the skill due to the locations skills are installed from the tool call above. To install specifically for Claude Code, install via:
+
+```bash
+npx skills add dfitchett/agent-skills --skill github-issue-from-templates -a claude-code
 ```
 
 ## Usage

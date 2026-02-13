@@ -1,6 +1,6 @@
 # github-issue-from-templates
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creates GitHub issues by fetching field definitions from GitHub issue templates at runtime. You define lightweight JSON configs that point to your repo's issue templates — the skill handles template parsing, conversational information gathering, issue composition, and creation via the GitHub MCP.
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creates GitHub issues by fetching field definitions from GitHub issue templates at runtime. You define lightweight JSON configs that point to your repo's issue templates — the skill handles template parsing, conversational information gathering, issue composition, and creation via the GitHub MCP or `gh` CLI.
 
 ## How It Works
 
@@ -20,8 +20,11 @@ npx skills add dfitchett/skills/github-issue-from-templates
 
 ### Prerequisites
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with the [GitHub MCP server](https://github.com/github/github-mcp-server) configured
-- GitHub access to the repositories containing your issue templates
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- **One of the following** for GitHub access:
+  - [GitHub MCP server](https://github.com/github/github-mcp-server) configured (preferred), **or**
+  - [`gh` CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
+- Access to the repositories containing your issue templates
 
 ## File Structure
 

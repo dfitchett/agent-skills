@@ -20,6 +20,18 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
 
 ---
 
+## Tool Detection
+
+Before starting the workflow, determine which GitHub tool is available:
+
+1. **GitHub MCP** (preferred): Check if the GitHub MCP server is available by looking for MCP tools like `get_file_contents` or `create_issue`. If available, use MCP tools throughout.
+2. **`gh` CLI** (fallback): If GitHub MCP is not available, verify the `gh` CLI is installed and authenticated by running `gh auth status`. If authenticated, use `gh` CLI commands throughout.
+3. **Neither available**: Notify the user that either the [GitHub MCP server](https://github.com/github/github-mcp-server) or the [`gh` CLI](https://cli.github.com/) is required, and stop.
+
+Store the detected tool as the **GitHub method** (`mcp` or `cli`) and use it consistently for all GitHub operations in the workflow.
+
+---
+
 ## Workflow
 
 ### Step 1: Template Selection
@@ -32,12 +44,18 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
 
 ### Step 2: Fetch Template from GitHub
 
-Use the GitHub MCP `get_file_contents` tool to fetch the template file:
+Fetch the template file using the detected GitHub method:
 
+**If MCP**: Use `get_file_contents`:
 ```
 owner: <config.repository.owner>
 repo:  <config.repository.repo>
 path:  <config.templateSource.path>
+```
+
+**If CLI**: Use `gh` to fetch the raw file content:
+```bash
+gh api repos/<config.repository.owner>/<config.repository.repo>/contents/<config.templateSource.path> --jq '.content' | base64 -d
 ```
 
 Then parse based on `config.templateSource.format`:
@@ -140,7 +158,9 @@ Ask for confirmation or edits. If the user requests changes, apply them and re-p
 
 ### Step 6: Create Issue
 
-Use GitHub MCP `issue_write` with:
+Create the issue using the detected GitHub method:
+
+**If MCP**: Use `issue_write`:
 ```
 method: create
 owner: <config.repository.owner>
@@ -151,9 +171,38 @@ labels: <label array>
 assignees: <assignee array>
 ```
 
+**If CLI**: Use `gh issue create`:
+```bash
+gh issue create \
+  --repo <config.repository.owner>/<config.repository.repo> \
+  --title "<composed title>" \
+  --body "<composed body>" \
+  --label "<label1>" --label "<label2>" \
+  --assignee "<assignee1>" --assignee "<assignee2>"
+```
+- Pass each label and assignee as a separate `--label` / `--assignee` flag
+- Use a heredoc for the body if it contains special characters:
+  ```bash
+  gh issue create \
+    --repo owner/repo \
+    --title "Title" \
+    --body "$(cat <<'EOF'
+  <composed body>
+  EOF
+  )" \
+    --label "label1" --label "label2"
+  ```
+- Parse the issue URL from the command output (printed to stdout on success)
+
 ### Step 7: Post-Creation
 
-Display the result using `config.postCreation.displayFormat`, substituting `{issueNumber}` and `{issueUrl}` with actual values.
+Extract the issue URL from the creation response:
+- **If MCP**: Get the URL from the response payload (e.g., `html_url` field)
+- **If CLI**: The `gh issue create` command prints the issue URL to stdout
+
+**Always display the issue URL to the user** as a clickable link, regardless of whether `config.postCreation` is configured. This is the minimum required output on success.
+
+If `config.postCreation.displayFormat` is defined, also render it by substituting `{issueNumber}` and `{issueUrl}` with actual values.
 
 Display each item from `config.postCreation.additionalNotes` as a follow-up note.
 
@@ -188,9 +237,10 @@ When `config.acceptanceCriteria` is defined:
 ## Error Handling
 
 ### Template fetch failure
-If `get_file_contents` fails:
+If the template fetch fails (MCP `get_file_contents` or `gh api`):
 - Notify the user that the template could not be fetched
 - Suggest checking repository access permissions
+- If using CLI, suggest running `gh auth status` to verify authentication
 - Offer to create the issue manually without template structure
 
 ### JSON config parse failure
@@ -198,12 +248,13 @@ If a template config file is malformed:
 - Skip that template during selection
 - Notify the user which config failed to parse
 
-### GitHub MCP failure (issue creation)
-If `issue_write` fails:
+### Issue creation failure
+If issue creation fails (MCP `issue_write` or `gh issue create`):
 1. Stop the operation immediately
 2. Notify the user of the failure
 3. Provide context about potential causes: authentication token issues, permissions, rate limits, invalid repository access
-4. Offer to display the composed issue body so the user can create it manually
+4. If using CLI, include the stderr output from the `gh` command for diagnostics
+5. Offer to display the composed issue body so the user can create it manually
 
 ---
 

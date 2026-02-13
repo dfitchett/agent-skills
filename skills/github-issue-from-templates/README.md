@@ -29,17 +29,20 @@ npx skills add dfitchett/skills/github-issue-from-templates
 ## File Structure
 
 ```
-github-issue-from-templates/
-  SKILL.md                    # Workflow engine (do not edit for project-specific changes)
+~/.claude/skills/github-issue-from-templates/   # Skill installation (managed by npx skills)
+  SKILL.md                                        # Workflow engine
   references/
-    schema.json               # JSON Schema for template config validation
-  assets/
-    *.json                    # Your template configs (one per issue type)
+    schema.json                                   # JSON Schema for template config validation
+
+~/.claude/configs/github-issue-from-templates/   # Your template configs (survives skill updates)
+  *.json                                          # One config per issue type
 ```
+
+Template configs are stored in `~/.claude/configs/github-issue-from-templates/` — **outside** the skill installation directory — so they are preserved when you run `npx skills update`.
 
 ## Adding a Template
 
-Create a JSON file in `assets/` that points to an existing GitHub issue template in your repo. Here's a minimal example:
+Create a JSON file in `~/.claude/configs/github-issue-from-templates/` that points to an existing GitHub issue template in your repo. Here's a minimal example:
 
 ```json
 {

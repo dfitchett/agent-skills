@@ -5,7 +5,7 @@ description: Create GitHub issues using data-driven templates. Supports any issu
 
 # GitHub Issue Creation — Data-Driven Workflow Engine
 
-This skill creates GitHub issues by dynamically fetching field definitions from GitHub issue templates at runtime. Template metadata (triggers, labels, defaults, formatting rules) is stored in per-template JSON config files under `assets/`. The skill itself contains no hardcoded field definitions.
+This skill creates GitHub issues by dynamically fetching field definitions from GitHub issue templates at runtime. Template metadata (triggers, labels, defaults, formatting rules) is stored in per-template JSON config files in a user-managed directory separate from the skill installation. The skill itself contains no hardcoded field definitions.
 
 ## File Structure
 
@@ -14,9 +14,12 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
   SKILL.md                    # This file — generic workflow engine
   references/
     schema.json               # JSON Schema for template config files
-  assets/
-    *.json                    # Template configs (one per issue type)
+
+~/.claude/configs/github-issue-from-templates/
+  *.json                      # Template configs (one per issue type) — user-managed, survives skill updates
 ```
+
+> **Why a separate directory?** The skill installation directory (`~/.claude/skills/...`) is replaced on `npx skills update`. Storing template configs in `~/.claude/configs/github-issue-from-templates/` keeps them safe across updates.
 
 ---
 
@@ -36,7 +39,7 @@ Store the detected tool as the **GitHub method** (`mcp` or `cli`) and use it con
 
 ### Step 1: Template Selection
 
-1. Read all `.json` files from `~/.claude/skills/github-issue-from-templates/assets/`.
+1. Read all `.json` files from `~/.claude/configs/github-issue-from-templates/`. If the directory does not exist, notify the user that no template configs have been set up yet and offer to create the directory and a first template config.
 2. For each config, compare the user's request against `triggers.keywords` (case-insensitive substring match) and `triggers.description`.
 3. **Single match**: Proceed with that template. Confirm the selection with the user briefly (e.g., "I'll use the [template name] template.").
 4. **Multiple matches**: Present the matching templates by `name` and `description` and ask the user to choose.
@@ -262,7 +265,7 @@ If issue creation fails (MCP `issue_write` or `gh issue create`):
 
 To add support for a new issue type:
 
-1. Create a new `.json` file in `~/.claude/skills/github-issue-from-templates/assets/`
+1. Create a new `.json` file in `~/.claude/configs/github-issue-from-templates/`
 2. Follow the schema defined in `references/schema.json`
 3. Set `repository.owner` and `repository.repo` to the target GitHub repository
 4. Set `templateSource.path` to the repo-relative path of the GitHub issue template

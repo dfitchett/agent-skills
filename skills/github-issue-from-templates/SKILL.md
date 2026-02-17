@@ -20,8 +20,10 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
   settings.json               # Storage mode config — created on first run
   .local/                     # Template configs (local mode only) — user-managed, survives skill updates
     *.json
-  .cache/                     # Local cache of GitHub configs (GitHub mode, auto-managed)
-    *.json
+  .cache/                     # Local cache (auto-managed)
+    *.json                    # Cached config files (GitHub mode)
+    templates/                # Cached issue templates (both modes)
+      <config-id>.yml|md
 
 <owner>/<repo>/<path>/        # Template configs (GitHub mode) — canonical source
   *.json
@@ -168,11 +170,19 @@ Write each fetched file to `~/.claude/configs/github-issue-from-templates/.cache
 
 Parse each fetched file as JSON. Skip files that fail to parse and notify the user (see [Error Handling](#error-handling)).
 
+#### 4. Sync templates (optional)
+
+For each config that was just synced, optionally fetch the corresponding issue template and save it to `.cache/templates/<config.id>.<config.templateSource.format>`. Create the `.cache/templates/` directory if it doesn't exist. This step is optional — templates will be fetched lazily on first use in Step 2 if skipped here.
+
 ---
 
 ### Step 2: Fetch Template from GitHub
 
-Fetch the template file using the detected GitHub method:
+Before fetching from GitHub, check the local template cache:
+
+1. **Check cache**: Look for `~/.claude/configs/github-issue-from-templates/.cache/templates/<config.id>.<config.templateSource.format>`
+2. **If cached** → read the file contents from cache and skip the GitHub API call
+3. **If not cached** → fetch from GitHub using the detected GitHub method (below), then save the raw content to `.cache/templates/<config.id>.<config.templateSource.format>`. Create the `.cache/templates/` directory if it doesn't exist.
 
 **If MCP**: Use `get_file_contents`:
 ```
@@ -390,8 +400,14 @@ If pushing a config to GitHub fails:
 - If the error includes a SHA mismatch, suggest re-fetching the file and retrying
 - Suggest the user sync later once the issue is resolved
 
+### Cached template parse failure
+If a cached template file in `.cache/templates/` fails to parse:
+- Delete the cached template file
+- Re-fetch from GitHub using the normal Step 2 flow
+- If the re-fetch also fails, fall back to the template fetch failure handling below
+
 ### Template fetch failure
-If the template fetch fails (MCP `get_file_contents` or `gh api`):
+If the template fetch fails (MCP `get_file_contents` or `gh api`) and no valid cache exists:
 - Notify the user that the template could not be fetched
 - Suggest checking repository access permissions
 - If using CLI, suggest running `gh auth status` to verify authentication
@@ -506,11 +522,13 @@ Read, edit, and overwrite the `.json` file in `~/.claude/configs/github-issue-fr
 
 ### Manual sync
 
-If the user asks to sync configs (or if configs seem stale), re-run the full download flow from [Syncing Configs from GitHub](#syncing-configs-from-github). This overwrites the contents of `.cache/` with the latest files from the remote repo.
+If the user asks to sync configs (or if configs seem stale), re-run the full download flow from [Syncing Configs from GitHub](#syncing-configs-from-github). This overwrites the contents of `.cache/` with the latest files from the remote repo. Additionally, for each synced config, re-fetch the issue template from GitHub and update `.cache/templates/<config.id>.<config.templateSource.format>`.
+
+> **Note:** Templates are cached lazily (on first use in Step 2), so a manual sync only refreshes templates for configs that already have a cached template in `.cache/templates/`.
 
 ### Force refresh
 
-Delete the `.cache/` directory entirely. The next skill invocation will detect the missing cache and re-download everything during Step 0.
+Delete the `.cache/` directory entirely. The next skill invocation will detect the missing cache and re-download everything during Step 0. This removes both cached configs and cached templates. To only refresh templates, delete `.cache/templates/` — templates will be re-fetched lazily on next use.
 
 ### When to suggest a sync
 

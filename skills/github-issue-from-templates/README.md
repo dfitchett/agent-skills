@@ -40,8 +40,10 @@ npx skills add dfitchett/skills/github-issue-from-templates
   settings.json                                   # Storage mode configuration (created on first run)
   .local/                                         # Template configs (local mode only)
     *.json
-  .cache/                                         # Local cache of GitHub configs (GitHub mode, auto-managed)
-    *.json
+  .cache/                                         # Local cache (auto-managed)
+    *.json                                        # Cached config files (GitHub mode)
+    templates/                                    # Cached issue templates (both modes)
+      *.yml, *.md
 ```
 
 The `settings.json` file always lives locally at `~/.claude/configs/github-issue-from-templates/settings.json`. Template configs are stored in `.local/` (local mode) or cached in `.cache/` from a GitHub repository (GitHub mode), depending on your chosen storage mode.

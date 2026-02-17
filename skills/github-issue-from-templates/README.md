@@ -38,10 +38,13 @@ npx skills add dfitchett/skills/github-issue-from-templates
 
 ~/.claude/configs/github-issue-from-templates/   # Local settings + configs
   settings.json                                   # Storage mode configuration (created on first run)
-  *.json                                          # Template configs (local mode only)
+  .local/                                         # Template configs (local mode only)
+    *.json
+  .cache/                                         # Local cache of GitHub configs (GitHub mode, auto-managed)
+    *.json
 ```
 
-The `settings.json` file always lives locally at `~/.claude/configs/github-issue-from-templates/settings.json`. Template configs are stored either locally alongside it or in a GitHub repository, depending on your chosen storage mode.
+The `settings.json` file always lives locally at `~/.claude/configs/github-issue-from-templates/settings.json`. Template configs are stored in `.local/` (local mode) or cached in `.cache/` from a GitHub repository (GitHub mode), depending on your chosen storage mode.
 
 ## Config Storage
 
@@ -49,7 +52,7 @@ On first run, the skill asks where to store template configs. You can choose bet
 
 ### Local Storage
 
-Configs are stored as `.json` files in `~/.claude/configs/github-issue-from-templates/`. This is the simplest option — configs live on your machine alongside the skill settings.
+Configs are stored as `.json` files in `~/.claude/configs/github-issue-from-templates/.local/`. This is the simplest option — configs live on your machine alongside the skill settings.
 
 - No additional setup required
 - Configs are only available on the current machine
@@ -59,8 +62,9 @@ Configs are stored as `.json` files in `~/.claude/configs/github-issue-from-temp
 
 Configs are stored in a GitHub repository. This enables sharing configs across machines and with team members, with version control built in.
 
-- Configs are fetched from GitHub on each run
-- Changes are committed back to the repo
+- Configs are cached locally after first sync — reads are instant, no network calls on each run
+- Manual sync available to pull the latest from GitHub at any time
+- Changes are saved to the local cache first, then committed back to the repo
 - Share the same configs across multiple machines
 - Team members can use the same config repo
 - The skill can help create a new private repo (`github-issue-from-templates-configs`) or use an existing one
@@ -99,7 +103,7 @@ Create a JSON file following the schema in `references/schema.json` that points 
 
 **Where to save it** depends on your storage mode:
 
-- **Local**: Save the file directly to `~/.claude/configs/github-issue-from-templates/<name>.json`
+- **Local**: Save the file directly to `~/.claude/configs/github-issue-from-templates/.local/<name>.json`
 - **GitHub**: The skill commits the file to your config repo — just ask it to add a new template and it will walk you through the process
 
 The skill fetches the actual template from GitHub at runtime, so you don't duplicate field definitions. Your config only adds:

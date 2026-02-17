@@ -12,7 +12,7 @@
       "oneOf": [
         {
           "type": "object",
-          "description": "Store configs locally in ~/.claude/configs/github-issue-from-templates/.",
+          "description": "Store configs locally in ~/.claude/configs/github-issue-from-templates/.local/.",
           "required": ["type"],
           "additionalProperties": false,
           "properties": {
@@ -24,7 +24,7 @@
         },
         {
           "type": "object",
-          "description": "Store configs in a GitHub repository.",
+          "description": "Store configs in a GitHub repository. Configs are cached locally in .cache/ after first sync — reads are instant. Use manual sync to pull latest from GitHub.",
           "required": ["type", "owner", "repo"],
           "additionalProperties": false,
           "properties": {

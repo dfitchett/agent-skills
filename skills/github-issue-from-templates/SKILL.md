@@ -18,13 +18,16 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
 
 ~/.claude/configs/github-issue-from-templates/
   settings.json               # Storage mode config — created on first run
-  *.json                      # Template configs (local mode only) — user-managed, survives skill updates
+  .local/                     # Template configs (local mode only) — user-managed, survives skill updates
+    *.json
+  .cache/                     # Local cache of GitHub configs (GitHub mode, auto-managed)
+    *.json
 
-<owner>/<repo>/<path>/        # Template configs (GitHub mode) — stored in a GitHub repo
+<owner>/<repo>/<path>/        # Template configs (GitHub mode) — canonical source
   *.json
 ```
 
-> **Why a separate directory?** The skill installation directory (`~/.claude/skills/...`) is replaced on `npx skills update`. Storing template configs in `~/.claude/configs/github-issue-from-templates/` (local mode) or a GitHub repo (GitHub mode) keeps them safe across updates. The `settings.json` file always lives locally since it tells the skill where to find configs.
+> **Why a separate directory?** The skill installation directory (`~/.claude/skills/...`) is replaced on `npx skills update`. Storing template configs in `~/.claude/configs/github-issue-from-templates/.local/` (local mode) or a GitHub repo (GitHub mode) keeps them safe across updates. The `settings.json` file always lives locally since it tells the skill where to find configs.
 
 ---
 
@@ -50,16 +53,20 @@ Before template selection, resolve where configs are stored.
 
 1. Check if `~/.claude/configs/github-issue-from-templates/settings.json` exists.
 2. **If it exists**: Read it, validate against `references/settings-schema.json`, and resolve the storage mode:
-   - `configStorage.type === "local"` → configs are in `~/.claude/configs/github-issue-from-templates/`
-   - `configStorage.type === "github"` → configs are in the specified GitHub repo at the configured path and branch
+   - `configStorage.type === "local"` → configs are in `~/.claude/configs/github-issue-from-templates/.local/`
+   - `configStorage.type === "github"` → configs are cached locally in `~/.claude/configs/github-issue-from-templates/.cache/` (canonical source is the configured GitHub repo)
 3. **If it does not exist**: Run the **Setup Flow** (see below).
+4. **Cache management** (GitHub mode only — after resolving `configStorage.type === "github"`):
+   - If `~/.claude/configs/github-issue-from-templates/.cache/` **does not exist** → run initial sync (see [Syncing Configs from GitHub](#syncing-configs-from-github)) to download all configs into `.cache/`
+   - If `.cache/` **exists** → use cached files directly (no network call)
+5. Store the resolved config directory path (`.local/` or `.cache/`) for use in Step 1.
 
 #### Setup Flow (First Run)
 
 Ask the user how they want to store their template configs:
 
 **Option A — Local storage:**
-1. Create the directory `~/.claude/configs/github-issue-from-templates/` if it doesn't exist
+1. Create the directories `~/.claude/configs/github-issue-from-templates/` and `.local/` if they don't exist
 2. Write `settings.json`:
    ```json
    {
@@ -74,7 +81,7 @@ Ask the user how they want to store their template configs:
 1. Ask if they have an existing repo for configs
 2. **If yes**:
    - Gather: `owner`, `repo`, `path` (default: `configs/github-issue-from-templates/`), `branch` (default: `main`)
-   - Validate access by listing the directory contents using the detected GitHub method (see [Loading Configs from GitHub](#loading-configs-from-github) for commands)
+   - Validate access by listing the directory contents using the detected GitHub method (see [Syncing Configs from GitHub](#syncing-configs-from-github) for commands)
    - Write `settings.json`:
      ```json
      {
@@ -93,6 +100,7 @@ Ask the user how they want to store their template configs:
    - **If CLI**: `gh repo create <owner>/github-issue-from-templates-configs --private --description "Template configs for github-issue-from-templates skill"`
    - Create the initial directory by committing a placeholder `README.md` at the configured path
    - Write `settings.json` as above
+4. After writing `settings.json`, run the initial sync to populate `.cache/` (see [Syncing Configs from GitHub](#syncing-configs-from-github))
 
 #### Switching Storage Modes
 
@@ -100,8 +108,8 @@ If the user asks to change their storage mode (e.g., from local to GitHub or vic
 
 1. Read the current `settings.json` to determine the current mode
 2. Ask the user if they want to **migrate** existing configs to the new location:
-   - **Local → GitHub**: Read each local `.json` config (excluding `settings.json`), then commit each to the GitHub repo at the configured path
-   - **GitHub → Local**: Fetch each `.json` config from GitHub, then write each to `~/.claude/configs/github-issue-from-templates/`
+   - **Local → GitHub**: Read each `.json` config from `.local/`, commit each to the GitHub repo at the configured path via API, then populate `.cache/` from the push responses
+   - **GitHub → Local**: Copy each `.json` config from `.cache/` to `.local/`. Remove `.cache/`
 3. Update `settings.json` with the new storage configuration
 4. Confirm the switch and report how many configs were migrated
 
@@ -109,9 +117,9 @@ If the user asks to change their storage mode (e.g., from local to GitHub or vic
 
 ### Step 1: Template Selection
 
-1. **Load configs** based on the resolved storage mode from Step 0:
-   - **Local**: Read all `.json` files from `~/.claude/configs/github-issue-from-templates/`, **excluding** `settings.json`. If the directory does not exist or contains no config files, offer to create a first template config.
-   - **GitHub**: List and fetch `.json` files from the configured repo/path/branch (see [Loading Configs from GitHub](#loading-configs-from-github)), **excluding** `settings.json` and `README.md`. If the directory is empty or inaccessible, notify the user and offer to add a first config.
+1. **Load configs** from the resolved config directory (Step 0):
+   - **Local**: Read all `.json` files from `~/.claude/configs/github-issue-from-templates/.local/`. If the directory does not exist or contains no config files, offer to create a first template config.
+   - **GitHub**: Read all `.json` files from `~/.claude/configs/github-issue-from-templates/.cache/`, **excluding** `README.md`. The cache is populated during Step 0 — no network calls are needed here. If the cache is empty, offer to run a sync or add a first config.
 2. For each config, compare the user's request against `triggers.keywords` (case-insensitive substring match) and `triggers.description`.
 3. **Single match**: Proceed with that template. Confirm the selection with the user briefly (e.g., "I'll use the [template name] template.").
 4. **Multiple matches**: Present the matching templates by `name` and `description` and ask the user to choose.
@@ -119,11 +127,11 @@ If the user asks to change their storage mode (e.g., from local to GitHub or vic
 
 ---
 
-### Loading Configs from GitHub
+### Syncing Configs from GitHub
 
-When `configStorage.type === "github"`, use these methods to list and fetch config files.
+When `configStorage.type === "github"`, use this process to download configs from the remote repo into the local cache at `~/.claude/configs/github-issue-from-templates/.cache/`. This runs during initial setup (Step 0) and on manual sync requests.
 
-#### Listing files in the config directory
+#### 1. List files in the config directory
 
 **If MCP**: Use `get_file_contents` on the directory path:
 ```
@@ -132,14 +140,14 @@ repo:  <configStorage.repo>
 path:  <configStorage.path>
 ref:   <configStorage.branch>
 ```
-The response returns an array of file entries. Filter to `.json` files, excluding `settings.json`.
+The response returns an array of file entries. Filter to `.json` files, excluding `settings.json` and `README.md`.
 
 **If CLI**: Use the GitHub contents API:
 ```bash
 gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq '.[] | select(.name | endswith(".json")) | select(.name != "settings.json") | .name'
 ```
 
-#### Fetching individual config files
+#### 2. Fetch each config file
 
 **If MCP**: Use `get_file_contents` with the full file path:
 ```
@@ -153,6 +161,10 @@ ref:   <configStorage.branch>
 ```bash
 gh api repos/<owner>/<repo>/contents/<path>/<filename>?ref=<branch> --jq '.content' | base64 -d
 ```
+
+#### 3. Save to local cache
+
+Write each fetched file to `~/.claude/configs/github-issue-from-templates/.cache/<filename>`. Create the `.cache/` directory if it doesn't exist.
 
 Parse each fetched file as JSON. Skip files that fail to parse and notify the user (see [Error Handling](#error-handling)).
 
@@ -358,24 +370,25 @@ If `settings.json` exists but fails validation against `references/settings-sche
 - Show the specific validation error
 - Offer to re-run the Setup Flow to create a new `settings.json`
 
-### GitHub config repo access failure
-If the configured GitHub repo (for `configStorage.type === "github"`) is inaccessible:
-- Notify the user that the config repository could not be reached
+### GitHub sync failure
+If syncing configs from GitHub fails (during initial setup or manual sync):
+- **If `.cache/` exists with files**: Warn the user that the sync failed, but continue using the existing cached configs. Suggest retrying later.
+- **If `.cache/` is empty or does not exist**: Cannot proceed with GitHub mode. Notify the user and offer to switch to local storage mode.
 - Suggest checking: repository existence, access permissions, branch name
 - If using CLI, suggest `gh auth status` to verify authentication
-- Offer to switch to local storage mode
 
 ### Empty config directory
-If the config directory (local or GitHub) exists but contains no `.json` config files:
+If the config directory (`.local/` or `.cache/`) exists but contains no `.json` config files:
 - Notify the user that no template configs were found
 - Offer to create a first template config
+- For GitHub mode, suggest running a sync if the remote repo may have configs
 
 ### Config write failure (GitHub)
-If writing a config to GitHub fails:
-- Notify the user of the failure
+If pushing a config to GitHub fails:
+- The config is still saved locally in `.cache/` — confirm this to the user
 - Provide context about potential causes: branch protection rules, insufficient permissions, file conflicts
 - If the error includes a SHA mismatch, suggest re-fetching the file and retrying
-- Offer to save the config locally as a fallback
+- Suggest the user sync later once the issue is resolved
 
 ### Template fetch failure
 If the template fetch fails (MCP `get_file_contents` or `gh api`):
@@ -405,7 +418,7 @@ To add support for a new issue type, create a new `.json` config file following 
 
 ### Local storage (`configStorage.type === "local"`)
 
-1. Create a new `.json` file in `~/.claude/configs/github-issue-from-templates/`
+1. Create a new `.json` file in `~/.claude/configs/github-issue-from-templates/.local/`
 2. Follow the schema defined in `references/schema.json`
 3. Set `repository.owner` and `repository.repo` to the target GitHub repository
 4. Set `templateSource.path` to the repo-relative path of the GitHub issue template
@@ -417,7 +430,8 @@ To add support for a new issue type, create a new `.json` config file following 
 ### GitHub storage (`configStorage.type === "github"`)
 
 1. Compose the config JSON following `references/schema.json`
-2. Commit the file to the configured repo:
+2. Write the file to the local cache at `~/.claude/configs/github-issue-from-templates/.cache/<filename>.json` (immediately available for use)
+3. Push to GitHub:
 
    **If MCP**: Use `create_or_update_file`:
    ```
@@ -438,7 +452,8 @@ To add support for a new issue type, create a new `.json` config file following 
      --field content=$(echo '<JSON content>' | base64)
    ```
 
-3. No changes to this SKILL.md file are needed
+4. If the push fails, the config is still saved locally in `.cache/` — warn the user to sync later once the issue is resolved
+5. No changes to this SKILL.md file are needed
 
 ---
 
@@ -446,13 +461,12 @@ To add support for a new issue type, create a new `.json` config file following 
 
 ### Local storage
 
-Read, edit, and overwrite the `.json` file in `~/.claude/configs/github-issue-from-templates/` directly.
+Read, edit, and overwrite the `.json` file in `~/.claude/configs/github-issue-from-templates/.local/` directly.
 
 ### GitHub storage
 
-Updating a file via the GitHub contents API requires the current file's SHA. Follow these steps:
-
-1. **Fetch the current file** to get its SHA:
+1. **Edit the file** in the local cache at `~/.claude/configs/github-issue-from-templates/.cache/<filename>.json`
+2. **Fetch the current SHA** from GitHub:
 
    **If MCP**: Use `get_file_contents` — the response includes the `sha` field.
 
@@ -461,7 +475,7 @@ Updating a file via the GitHub contents API requires the current file's SHA. Fol
    gh api repos/<owner>/<repo>/contents/<path>/<filename>.json?ref=<branch> --jq '.sha'
    ```
 
-2. **Update the file** with the SHA included:
+3. **Push the updated file** to GitHub with the SHA:
 
    **If MCP**: Use `create_or_update_file` with the `sha` parameter:
    ```
@@ -483,6 +497,26 @@ Updating a file via the GitHub contents API requires the current file's SHA. Fol
      --field content=$(echo '<updated JSON>' | base64) \
      --field sha=<current SHA>
    ```
+
+4. If the push fails, the local cache already has the update — warn the user to sync later once the issue is resolved
+
+---
+
+## Syncing Configs
+
+### Manual sync
+
+If the user asks to sync configs (or if configs seem stale), re-run the full download flow from [Syncing Configs from GitHub](#syncing-configs-from-github). This overwrites the contents of `.cache/` with the latest files from the remote repo.
+
+### Force refresh
+
+Delete the `.cache/` directory entirely. The next skill invocation will detect the missing cache and re-download everything during Step 0.
+
+### When to suggest a sync
+
+- The user mentions that configs seem stale or different from what's in GitHub
+- A push succeeded on one machine but another machine doesn't reflect the change
+- After resolving a GitHub access issue that previously blocked syncing
 
 ---
 

@@ -5,7 +5,7 @@ description: Create GitHub issues using data-driven templates. Supports any issu
 
 # GitHub Issue Creation — Data-Driven Workflow Engine
 
-This skill creates GitHub issues by dynamically fetching field definitions from GitHub issue templates at runtime. Template metadata (triggers, labels, defaults, formatting rules) is stored in per-template JSON config files in a user-managed directory separate from the skill installation. The skill itself contains no hardcoded field definitions.
+This skill creates GitHub issues by dynamically fetching field definitions from GitHub issue templates at runtime. Template metadata (triggers, labels, defaults, formatting rules) is stored in per-template JSON config files. Configs can be stored locally or in a GitHub repository for cross-machine and team sharing. The skill itself contains no hardcoded field definitions.
 
 ## File Structure
 
@@ -14,12 +14,17 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
   SKILL.md                    # This file — generic workflow engine
   references/
     schema.json               # JSON Schema for template config files
+    settings-schema.json      # JSON Schema for settings.json
 
 ~/.claude/configs/github-issue-from-templates/
-  *.json                      # Template configs (one per issue type) — user-managed, survives skill updates
+  settings.json               # Storage mode config — created on first run
+  *.json                      # Template configs (local mode only) — user-managed, survives skill updates
+
+<owner>/<repo>/<path>/        # Template configs (GitHub mode) — stored in a GitHub repo
+  *.json
 ```
 
-> **Why a separate directory?** The skill installation directory (`~/.claude/skills/...`) is replaced on `npx skills update`. Storing template configs in `~/.claude/configs/github-issue-from-templates/` keeps them safe across updates.
+> **Why a separate directory?** The skill installation directory (`~/.claude/skills/...`) is replaced on `npx skills update`. Storing template configs in `~/.claude/configs/github-issue-from-templates/` (local mode) or a GitHub repo (GitHub mode) keeps them safe across updates. The `settings.json` file always lives locally since it tells the skill where to find configs.
 
 ---
 
@@ -33,17 +38,125 @@ Before starting the workflow, determine which GitHub tool is available:
 
 Store the detected tool as the **GitHub method** (`mcp` or `cli`) and use it consistently for all GitHub operations in the workflow.
 
+> **Note:** When using GitHub repo storage, the same detected method is used for additional operations: listing directory contents, reading files, creating/updating files, and optionally creating repositories.
+
 ---
 
 ## Workflow
 
+### Step 0: Settings & Storage Resolution
+
+Before template selection, resolve where configs are stored.
+
+1. Check if `~/.claude/configs/github-issue-from-templates/settings.json` exists.
+2. **If it exists**: Read it, validate against `references/settings-schema.json`, and resolve the storage mode:
+   - `configStorage.type === "local"` → configs are in `~/.claude/configs/github-issue-from-templates/`
+   - `configStorage.type === "github"` → configs are in the specified GitHub repo at the configured path and branch
+3. **If it does not exist**: Run the **Setup Flow** (see below).
+
+#### Setup Flow (First Run)
+
+Ask the user how they want to store their template configs:
+
+**Option A — Local storage:**
+1. Create the directory `~/.claude/configs/github-issue-from-templates/` if it doesn't exist
+2. Write `settings.json`:
+   ```json
+   {
+     "configStorage": {
+       "type": "local"
+     }
+   }
+   ```
+3. Offer to create a first template config
+
+**Option B — GitHub repository storage:**
+1. Ask if they have an existing repo for configs
+2. **If yes**:
+   - Gather: `owner`, `repo`, `path` (default: `configs/github-issue-from-templates/`), `branch` (default: `main`)
+   - Validate access by listing the directory contents using the detected GitHub method (see [Loading Configs from GitHub](#loading-configs-from-github) for commands)
+   - Write `settings.json`:
+     ```json
+     {
+       "configStorage": {
+         "type": "github",
+         "owner": "<owner>",
+         "repo": "<repo>",
+         "path": "configs/github-issue-from-templates/",
+         "branch": "main"
+       }
+     }
+     ```
+3. **If no** — help create a new repo:
+   - Suggest the name `github-issue-from-templates-configs` (default private)
+   - **If MCP**: Use `create_repository` with `name`, `private: true`, `description`
+   - **If CLI**: `gh repo create <owner>/github-issue-from-templates-configs --private --description "Template configs for github-issue-from-templates skill"`
+   - Create the initial directory by committing a placeholder `README.md` at the configured path
+   - Write `settings.json` as above
+
+#### Switching Storage Modes
+
+If the user asks to change their storage mode (e.g., from local to GitHub or vice versa):
+
+1. Read the current `settings.json` to determine the current mode
+2. Ask the user if they want to **migrate** existing configs to the new location:
+   - **Local → GitHub**: Read each local `.json` config (excluding `settings.json`), then commit each to the GitHub repo at the configured path
+   - **GitHub → Local**: Fetch each `.json` config from GitHub, then write each to `~/.claude/configs/github-issue-from-templates/`
+3. Update `settings.json` with the new storage configuration
+4. Confirm the switch and report how many configs were migrated
+
+---
+
 ### Step 1: Template Selection
 
-1. Read all `.json` files from `~/.claude/configs/github-issue-from-templates/`. If the directory does not exist, notify the user that no template configs have been set up yet and offer to create the directory and a first template config.
+1. **Load configs** based on the resolved storage mode from Step 0:
+   - **Local**: Read all `.json` files from `~/.claude/configs/github-issue-from-templates/`, **excluding** `settings.json`. If the directory does not exist or contains no config files, offer to create a first template config.
+   - **GitHub**: List and fetch `.json` files from the configured repo/path/branch (see [Loading Configs from GitHub](#loading-configs-from-github)), **excluding** `settings.json` and `README.md`. If the directory is empty or inaccessible, notify the user and offer to add a first config.
 2. For each config, compare the user's request against `triggers.keywords` (case-insensitive substring match) and `triggers.description`.
 3. **Single match**: Proceed with that template. Confirm the selection with the user briefly (e.g., "I'll use the [template name] template.").
 4. **Multiple matches**: Present the matching templates by `name` and `description` and ask the user to choose.
 5. **No match**: Present all available templates by `name` and `description` and ask the user to choose.
+
+---
+
+### Loading Configs from GitHub
+
+When `configStorage.type === "github"`, use these methods to list and fetch config files.
+
+#### Listing files in the config directory
+
+**If MCP**: Use `get_file_contents` on the directory path:
+```
+owner: <configStorage.owner>
+repo:  <configStorage.repo>
+path:  <configStorage.path>
+ref:   <configStorage.branch>
+```
+The response returns an array of file entries. Filter to `.json` files, excluding `settings.json`.
+
+**If CLI**: Use the GitHub contents API:
+```bash
+gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq '.[] | select(.name | endswith(".json")) | select(.name != "settings.json") | .name'
+```
+
+#### Fetching individual config files
+
+**If MCP**: Use `get_file_contents` with the full file path:
+```
+owner: <configStorage.owner>
+repo:  <configStorage.repo>
+path:  <configStorage.path>/<filename>
+ref:   <configStorage.branch>
+```
+
+**If CLI**:
+```bash
+gh api repos/<owner>/<repo>/contents/<path>/<filename>?ref=<branch> --jq '.content' | base64 -d
+```
+
+Parse each fetched file as JSON. Skip files that fail to parse and notify the user (see [Error Handling](#error-handling)).
+
+---
 
 ### Step 2: Fetch Template from GitHub
 
@@ -239,6 +352,31 @@ When `config.acceptanceCriteria` is defined:
 
 ## Error Handling
 
+### Malformed settings.json
+If `settings.json` exists but fails validation against `references/settings-schema.json`:
+- Notify the user that the settings file is invalid
+- Show the specific validation error
+- Offer to re-run the Setup Flow to create a new `settings.json`
+
+### GitHub config repo access failure
+If the configured GitHub repo (for `configStorage.type === "github"`) is inaccessible:
+- Notify the user that the config repository could not be reached
+- Suggest checking: repository existence, access permissions, branch name
+- If using CLI, suggest `gh auth status` to verify authentication
+- Offer to switch to local storage mode
+
+### Empty config directory
+If the config directory (local or GitHub) exists but contains no `.json` config files:
+- Notify the user that no template configs were found
+- Offer to create a first template config
+
+### Config write failure (GitHub)
+If writing a config to GitHub fails:
+- Notify the user of the failure
+- Provide context about potential causes: branch protection rules, insufficient permissions, file conflicts
+- If the error includes a SHA mismatch, suggest re-fetching the file and retrying
+- Offer to save the config locally as a fallback
+
 ### Template fetch failure
 If the template fetch fails (MCP `get_file_contents` or `gh api`):
 - Notify the user that the template could not be fetched
@@ -263,7 +401,9 @@ If issue creation fails (MCP `issue_write` or `gh issue create`):
 
 ## Adding a New Template
 
-To add support for a new issue type:
+To add support for a new issue type, create a new `.json` config file following the schema in `references/schema.json`. The save location depends on the storage mode configured in `settings.json`:
+
+### Local storage (`configStorage.type === "local"`)
 
 1. Create a new `.json` file in `~/.claude/configs/github-issue-from-templates/`
 2. Follow the schema defined in `references/schema.json`
@@ -273,6 +413,76 @@ To add support for a new issue type:
 6. Define `triggers.keywords` for automatic template matching
 7. Add any `fieldDefaults`, `fieldSkipConditions`, label rules, and formatting overrides
 8. No changes to this SKILL.md file are needed
+
+### GitHub storage (`configStorage.type === "github"`)
+
+1. Compose the config JSON following `references/schema.json`
+2. Commit the file to the configured repo:
+
+   **If MCP**: Use `create_or_update_file`:
+   ```
+   owner:   <configStorage.owner>
+   repo:    <configStorage.repo>
+   path:    <configStorage.path>/<filename>.json
+   content: <base64-encoded JSON>
+   message: "Add <template-name> template config"
+   branch:  <configStorage.branch>
+   ```
+
+   **If CLI**: Use the GitHub contents API:
+   ```bash
+   gh api repos/<owner>/<repo>/contents/<path>/<filename>.json \
+     --method PUT \
+     --field message="Add <template-name> template config" \
+     --field branch=<branch> \
+     --field content=$(echo '<JSON content>' | base64)
+   ```
+
+3. No changes to this SKILL.md file are needed
+
+---
+
+## Updating an Existing Template Config
+
+### Local storage
+
+Read, edit, and overwrite the `.json` file in `~/.claude/configs/github-issue-from-templates/` directly.
+
+### GitHub storage
+
+Updating a file via the GitHub contents API requires the current file's SHA. Follow these steps:
+
+1. **Fetch the current file** to get its SHA:
+
+   **If MCP**: Use `get_file_contents` — the response includes the `sha` field.
+
+   **If CLI**:
+   ```bash
+   gh api repos/<owner>/<repo>/contents/<path>/<filename>.json?ref=<branch> --jq '.sha'
+   ```
+
+2. **Update the file** with the SHA included:
+
+   **If MCP**: Use `create_or_update_file` with the `sha` parameter:
+   ```
+   owner:   <configStorage.owner>
+   repo:    <configStorage.repo>
+   path:    <configStorage.path>/<filename>.json
+   content: <base64-encoded updated JSON>
+   message: "Update <template-name> template config"
+   branch:  <configStorage.branch>
+   sha:     <current SHA>
+   ```
+
+   **If CLI**:
+   ```bash
+   gh api repos/<owner>/<repo>/contents/<path>/<filename>.json \
+     --method PUT \
+     --field message="Update <template-name> template config" \
+     --field branch=<branch> \
+     --field content=$(echo '<updated JSON>' | base64) \
+     --field sha=<current SHA>
+   ```
 
 ---
 

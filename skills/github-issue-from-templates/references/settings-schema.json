@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "github-issue-from-templates-settings",
+  "title": "GitHub Issue From Templates — Settings",
+  "description": "Schema for settings.json that controls where template config files are stored. Located at ~/.claude/configs/github-issue-from-templates/settings.json.",
+  "type": "object",
+  "required": ["configStorage"],
+  "additionalProperties": false,
+  "properties": {
+    "configStorage": {
+      "description": "Where template config files are stored. Discriminated on the 'type' field.",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Store configs locally in ~/.claude/configs/github-issue-from-templates/.",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "local",
+              "description": "Local filesystem storage."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Store configs in a GitHub repository.",
+          "required": ["type", "owner", "repo"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "github",
+              "description": "GitHub repository storage."
+            },
+            "owner": {
+              "type": "string",
+              "description": "GitHub owner (user or organization) of the config repository."
+            },
+            "repo": {
+              "type": "string",
+              "description": "GitHub repository name where configs are stored."
+            },
+            "path": {
+              "type": "string",
+              "default": "configs/github-issue-from-templates/",
+              "description": "Directory path within the repo where config files are stored. Defaults to 'configs/github-issue-from-templates/'."
+            },
+            "branch": {
+              "type": "string",
+              "default": "main",
+              "description": "Branch to read from and write to. Defaults to 'main'."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

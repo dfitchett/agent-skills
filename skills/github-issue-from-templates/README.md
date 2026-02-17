@@ -4,13 +4,14 @@ A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creat
 
 ## How It Works
 
-1. You say something like "create a bug ticket"
-2. The skill matches your request to a template config via keywords
-3. It fetches the actual GitHub issue template from your repo
-4. It walks you through the fields conversationally, applying any defaults you've configured
-5. It previews the composed issue and creates it on confirmation
+1. **First run**: The skill asks where you want to store template configs — locally or in a GitHub repo
+2. You say something like "create a bug ticket"
+3. The skill matches your request to a template config via keywords
+4. It fetches the actual GitHub issue template from your repo
+5. It walks you through the fields conversationally, applying any defaults you've configured
+6. It previews the composed issue and creates it on confirmation
 
-The skill engine (`SKILL.md`) is completely generic. All project-specific behavior — repos, labels, defaults, assignees — lives in the template config JSON files.
+The skill engine (`SKILL.md`) is completely generic. All project-specific behavior — repos, labels, defaults, assignees — lives in the template config JSON files. Storage settings are persisted in `settings.json` so the skill remembers your choice across sessions.
 
 ## Installation
 
@@ -33,16 +34,44 @@ npx skills add dfitchett/skills/github-issue-from-templates
   SKILL.md                                        # Workflow engine
   references/
     schema.json                                   # JSON Schema for template config validation
+    settings-schema.json                          # JSON Schema for settings.json validation
 
-~/.claude/configs/github-issue-from-templates/   # Your template configs (survives skill updates)
-  *.json                                          # One config per issue type
+~/.claude/configs/github-issue-from-templates/   # Local settings + configs
+  settings.json                                   # Storage mode configuration (created on first run)
+  *.json                                          # Template configs (local mode only)
 ```
 
-Template configs are stored in `~/.claude/configs/github-issue-from-templates/` — **outside** the skill installation directory — so they are preserved when you run `npx skills update`.
+The `settings.json` file always lives locally at `~/.claude/configs/github-issue-from-templates/settings.json`. Template configs are stored either locally alongside it or in a GitHub repository, depending on your chosen storage mode.
+
+## Config Storage
+
+On first run, the skill asks where to store template configs. You can choose between two modes:
+
+### Local Storage
+
+Configs are stored as `.json` files in `~/.claude/configs/github-issue-from-templates/`. This is the simplest option — configs live on your machine alongside the skill settings.
+
+- No additional setup required
+- Configs are only available on the current machine
+- Configs survive skill updates (stored outside the skill installation directory)
+
+### GitHub Repository Storage
+
+Configs are stored in a GitHub repository. This enables sharing configs across machines and with team members, with version control built in.
+
+- Configs are fetched from GitHub on each run
+- Changes are committed back to the repo
+- Share the same configs across multiple machines
+- Team members can use the same config repo
+- The skill can help create a new private repo (`github-issue-from-templates-configs`) or use an existing one
+
+### Switching Modes
+
+You can switch storage modes at any time by asking the skill. It will offer to migrate existing configs to the new location.
 
 ## Adding a Template
 
-Create a JSON file in `~/.claude/configs/github-issue-from-templates/` that points to an existing GitHub issue template in your repo. Here's a minimal example:
+Create a JSON file following the schema in `references/schema.json` that points to an existing GitHub issue template in your repo. Here's a minimal example:
 
 ```json
 {
@@ -68,6 +97,11 @@ Create a JSON file in `~/.claude/configs/github-issue-from-templates/` that poin
 }
 ```
 
+**Where to save it** depends on your storage mode:
+
+- **Local**: Save the file directly to `~/.claude/configs/github-issue-from-templates/<name>.json`
+- **GitHub**: The skill commits the file to your config repo — just ask it to add a new template and it will walk you through the process
+
 The skill fetches the actual template from GitHub at runtime, so you don't duplicate field definitions. Your config only adds:
 
 - **Trigger keywords** for matching user requests
@@ -83,6 +117,18 @@ The skill fetches the actual template from GitHub at runtime, so you don't dupli
 |--------|---------------|-------------|
 | `yml` | `.yml` | GitHub form-based templates with typed fields (dropdowns, inputs, textareas) |
 | `md` | `.md` | Frontmatter + markdown body with sections, checkboxes, and labeled fields |
+
+## Settings Reference
+
+The `settings.json` file controls where template configs are stored. See `references/settings-schema.json` for the full schema.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `configStorage.type` | `"local"` or `"github"` | Yes | Where configs are stored |
+| `configStorage.owner` | string | GitHub only | GitHub owner (user or org) of the config repo |
+| `configStorage.repo` | string | GitHub only | Repository name |
+| `configStorage.path` | string | No | Directory path within the repo (default: `configs/github-issue-from-templates/`) |
+| `configStorage.branch` | string | No | Branch name (default: `main`) |
 
 ## Template Config Reference
 

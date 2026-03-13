@@ -221,17 +221,70 @@
     },
     "projectBoard": {
       "type": "object",
-      "description": "GitHub project board configuration.",
+      "description": "GitHub Projects (v2) board configuration. Stores the project identity, its node ID (for GraphQL operations), and default values for project fields fetched from the API.",
+      "required": ["name", "number", "nodeId"],
       "additionalProperties": false,
       "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable project name for display (e.g., 'BMT Team 2 Board')."
+        },
+        "number": {
+          "type": "integer",
+          "description": "GitHub project number (from the project URL, e.g., 123 from https://github.com/orgs/ORG/projects/123)."
+        },
+        "nodeId": {
+          "type": "string",
+          "description": "The GraphQL node ID of the project (returned by the ProjectV2 query). Required for field lookups and mutations."
+        },
         "url": {
           "type": "string",
           "format": "uri",
-          "description": "URL of the GitHub project board."
+          "description": "Full URL of the GitHub project board."
         },
-        "defaultStatus": {
+        "owner": {
           "type": "string",
-          "description": "Default status column for the new issue."
+          "description": "GitHub owner (user or org) that owns the project. Defaults to config.repository.owner if omitted."
+        },
+        "ownerType": {
+          "type": "string",
+          "enum": ["organization", "user"],
+          "description": "Whether the project owner is an organization or a user. Determines which GraphQL query to use. Defaults to 'organization'."
+        },
+        "fieldDefaults": {
+          "type": "object",
+          "description": "Default values for project fields, keyed by the field's GraphQL node ID. Each entry stores the field name (for display) and the default value to apply.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["fieldName", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "fieldName": {
+                "type": "string",
+                "description": "Human-readable field name (e.g., 'Status', 'Priority', 'Sprint')."
+              },
+              "value": {
+                "type": "object",
+                "description": "The default value for this field. Structure depends on field type.",
+                "required": ["display"],
+                "additionalProperties": false,
+                "properties": {
+                  "display": {
+                    "type": "string",
+                    "description": "Human-readable display value (e.g., 'Backlog', 'High', 'Sprint 5')."
+                  },
+                  "optionId": {
+                    "type": "string",
+                    "description": "GraphQL option node ID for single-select fields."
+                  },
+                  "iterationId": {
+                    "type": "string",
+                    "description": "GraphQL iteration node ID for iteration fields."
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

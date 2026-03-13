@@ -1,6 +1,6 @@
 # github-issue-from-templates
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creates GitHub issues by fetching field definitions from GitHub issue templates at runtime. You define lightweight JSON configs that point to your repo's issue templates — the skill handles template parsing, conversational information gathering, issue composition, and creation via the GitHub MCP or `gh` CLI.
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creates GitHub issues by fetching field definitions from GitHub issue templates at runtime. You define lightweight JSON configs that point to your repo's issue templates — the skill handles template parsing, conversational information gathering, issue composition, and creation via the `gh` CLI.
 
 ## How It Works
 
@@ -8,8 +8,9 @@ A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that creat
 2. You say something like "create a bug ticket"
 3. The skill matches your request to a template config via keywords
 4. It fetches the actual GitHub issue template from your repo
-5. It walks you through the fields conversationally, applying any defaults you've configured
-6. It previews the composed issue and creates it on confirmation
+5. If no default project board is configured, it offers to set one up (fetches project fields via GraphQL and prompts for defaults)
+6. It walks you through the fields conversationally, applying any defaults you've configured
+7. It previews the composed issue (including project board and field defaults) and creates it on confirmation
 
 The skill engine (`SKILL.md`) is completely generic. All project-specific behavior — repos, labels, defaults, assignees — lives in the template config JSON files. Storage settings are persisted in `settings.json` so the skill remembers your choice across sessions.
 
@@ -22,9 +23,7 @@ npx skills add dfitchett/skills/github-issue-from-templates
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- **One of the following** for GitHub access:
-  - [GitHub MCP server](https://github.com/github/github-mcp-server) configured (preferred), **or**
-  - [`gh` CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
+- [`gh` CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
 - Access to the repositories containing your issue templates
 
 ## File Structure
@@ -115,6 +114,7 @@ The skill fetches the actual template from GitHub at runtime, so you don't dupli
 - **Field skip conditions** for conditional fields
 - **Label rules** (static defaults + conditional based on keywords or field values)
 - **Assignee defaults**
+- **Project board** with default field values (Status, Priority, Sprint, etc.)
 - **Gathering notes** to guide the conversational flow
 
 ### Supported Template Formats
@@ -150,6 +150,7 @@ See [`references/schema.json`](references/schema.json) for the complete schema. 
 | `fieldSkipConditions` | Conditional field visibility based on other field values |
 | `labels` | Default labels + conditional rules (keyword, fieldValue, fieldTransform) |
 | `assignees` | Default assignees + whether to prompt for more |
+| `projectBoard` | GitHub Projects (v2) board — project identity, node ID, and default field values (e.g., Status, Priority) fetched via GraphQL |
 | `acceptanceCriteria` | Baseline items and formatting preferences |
 | `linkFormatting` | Rules for rendering different link types in the issue body |
 | `postCreation` | Success message template and follow-up notes |

@@ -35,15 +35,9 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
 
 ## Tool Detection
 
-Before starting the workflow, determine which GitHub tool is available:
+Before starting the workflow, verify the `gh` CLI is installed and authenticated by running `gh auth status`. If not installed or not authenticated, notify the user that the [`gh` CLI](https://cli.github.com/) is required and stop.
 
-1. **GitHub MCP** (preferred): Check if the GitHub MCP server is available by looking for MCP tools like `get_file_contents` or `create_issue`. If available, use MCP tools throughout.
-2. **`gh` CLI** (fallback): If GitHub MCP is not available, verify the `gh` CLI is installed and authenticated by running `gh auth status`. If authenticated, use `gh` CLI commands throughout.
-3. **Neither available**: Notify the user that either the [GitHub MCP server](https://github.com/github/github-mcp-server) or the [`gh` CLI](https://cli.github.com/) is required, and stop.
-
-Store the detected tool as the **GitHub method** (`mcp` or `cli`) and use it consistently for all GitHub operations in the workflow.
-
-> **Note:** When using GitHub repo storage, the same detected method is used for additional operations: listing directory contents, reading files, creating/updating files, and optionally creating repositories.
+All GitHub operations in this skill use the `gh` CLI exclusively.
 
 ---
 
@@ -83,7 +77,7 @@ Ask the user how they want to store their template configs:
 1. Ask if they have an existing repo for configs
 2. **If yes**:
    - Gather: `owner`, `repo`, `path` (default: `configs/github-issue-from-templates/`), `branch` (default: `main`)
-   - Validate access by listing the directory contents using the detected GitHub method (see [Syncing Configs from GitHub](#syncing-configs-from-github) for commands)
+   - Validate access by listing the directory contents (see [Syncing Configs from GitHub](#syncing-configs-from-github) for commands)
    - Write `settings.json`:
      ```json
      {
@@ -98,8 +92,7 @@ Ask the user how they want to store their template configs:
      ```
 3. **If no** — help create a new repo:
    - Suggest the name `github-issue-from-templates-configs` (default private)
-   - **If MCP**: Use `create_repository` with `name`, `private: true`, `description`
-   - **If CLI**: `gh repo create <owner>/github-issue-from-templates-configs --private --description "Template configs for github-issue-from-templates skill"`
+   - `gh repo create <owner>/github-issue-from-templates-configs --private --description "Template configs for github-issue-from-templates skill"`
    - Create the initial directory by committing a placeholder `README.md` at the configured path
    - Write `settings.json` as above
 4. After writing `settings.json`, run the initial sync to populate `.cache/` (see [Syncing Configs from GitHub](#syncing-configs-from-github))
@@ -135,31 +128,12 @@ When `configStorage.type === "github"`, use this process to download configs fro
 
 #### 1. List files in the config directory
 
-**If MCP**: Use `get_file_contents` on the directory path:
-```
-owner: <configStorage.owner>
-repo:  <configStorage.repo>
-path:  <configStorage.path>
-ref:   <configStorage.branch>
-```
-The response returns an array of file entries. Filter to `.json` files, excluding `settings.json` and `README.md`.
-
-**If CLI**: Use the GitHub contents API:
 ```bash
 gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq '.[] | select(.name | endswith(".json")) | select(.name != "settings.json") | .name'
 ```
 
 #### 2. Fetch each config file
 
-**If MCP**: Use `get_file_contents` with the full file path:
-```
-owner: <configStorage.owner>
-repo:  <configStorage.repo>
-path:  <configStorage.path>/<filename>
-ref:   <configStorage.branch>
-```
-
-**If CLI**:
 ```bash
 gh api repos/<owner>/<repo>/contents/<path>/<filename>?ref=<branch> --jq '.content' | base64 -d
 ```
@@ -182,16 +156,8 @@ Before fetching from GitHub, check the local template cache:
 
 1. **Check cache**: Look for `~/.claude/configs/github-issue-from-templates/.cache/templates/<config.id>.<config.templateSource.format>`
 2. **If cached** → read the file contents from cache and skip the GitHub API call
-3. **If not cached** → fetch from GitHub using the detected GitHub method (below), then save the raw content to `.cache/templates/<config.id>.<config.templateSource.format>`. Create the `.cache/templates/` directory if it doesn't exist.
+3. **If not cached** → fetch from GitHub using the `gh` CLI, then save the raw content to `.cache/templates/<config.id>.<config.templateSource.format>`. Create the `.cache/templates/` directory if it doesn't exist.
 
-**If MCP**: Use `get_file_contents`:
-```
-owner: <config.repository.owner>
-repo:  <config.repository.repo>
-path:  <config.templateSource.path>
-```
-
-**If CLI**: Use `gh` to fetch the raw file content:
 ```bash
 gh api repos/<config.repository.owner>/<config.repository.repo>/contents/<config.templateSource.path> --jq '.content' | base64 -d
 ```
@@ -227,6 +193,136 @@ Parse the markdown body to identify:
 - **Checkbox groups**: Lines matching `- [ ] Item text` grouped under a heading or bold label
 - **Labeled fields**: Bold-labeled list items like `- **Team name:**` under a section
 - **Self-verification checklists**: Sections like "Yes, I have" contain items the skill should satisfy automatically
+
+### Step 2.5: Project Board Check
+
+After selecting a template config, check whether `config.projectBoard` is defined:
+
+1. **If `config.projectBoard` exists** with at least `name`, `number`, and `nodeId`: Proceed — the project and its field defaults will be shown in the preview (Step 5).
+2. **If `config.projectBoard` is missing or incomplete**: Prompt the user:
+   - "This template doesn't have a default project board configured. Would you like to assign one?"
+   - **If yes**: Run the **Project Gathering** flow (below) and persist the result back to the config file (same save logic as [Updating an Existing Template Config](#updating-an-existing-template-config)).
+   - **If no**: Continue without a project. Set `config.projectBoard` to `null` for this session so the preview omits the project line.
+
+#### Project Gathering
+
+##### Step A: Identify the project
+
+Ask the user for:
+
+1. **Project URL or number** — if the user provides a URL (e.g., `https://github.com/orgs/ORG/projects/123`), extract the owner, owner type (`organization` or `user`), and number automatically. Otherwise ask for the number.
+2. **Project owner** — defaults to `config.repository.owner` if not provided or extracted from URL.
+3. **Owner type** — if not obvious from the URL, ask whether the owner is an organization or a user. Default to `organization`.
+
+##### Step B: Fetch project details and fields via GraphQL
+
+Use the GitHub GraphQL API via `gh api graphql` to fetch the project's node ID, name, and fields in a single query:
+
+```bash
+gh api graphql -f query='
+  query($owner: String!, $number: Int!) {
+    <ownerType>(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 50) {
+          nodes {
+            ... on ProjectV2Field {
+              id
+              name
+              dataType
+            }
+            ... on ProjectV2IterationField {
+              id
+              name
+              dataType
+              configuration {
+                iterations {
+                  id
+                  title
+                  startDate
+                }
+              }
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+              name
+              dataType
+              options {
+                id
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+' -f owner='<owner>' -F number=<number>
+```
+
+Replace `<ownerType>` with `organization` or `user` based on the owner type determined in Step A.
+
+From the response, extract:
+- **`id`** → store as `projectBoard.nodeId`
+- **`title`** → store as `projectBoard.name` (confirm with the user: "I found project **[title]** — is this correct?")
+- **`fields.nodes`** → the list of project fields with their types and options
+
+##### Step C: Prompt for field defaults
+
+Present the fetched fields to the user and ask which ones should have default values. For each field:
+
+1. **Skip built-in fields** that are auto-managed by GitHub: `Title`, `Assignees`, `Labels`, `Linked pull requests`, `Reviewers`, `Repository`, `Milestone`. These are set via the issue itself, not project field values.
+2. **Single-select fields** (e.g., Status, Priority): Present the available options as a numbered list and ask the user to pick a default, or skip.
+3. **Iteration fields** (e.g., Sprint): Present the available iterations and ask the user to pick a default, or skip. Note that iteration defaults may go stale as sprints progress — mention this to the user.
+4. **Text, number, and date fields**: Ask for a default value or skip.
+
+For each field where the user provides a default, store it in `projectBoard.fieldDefaults` keyed by the field's node ID:
+
+```json
+{
+  "<field-node-id>": {
+    "fieldName": "Status",
+    "value": {
+      "display": "Backlog",
+      "optionId": "<option-node-id>"
+    }
+  }
+}
+```
+
+- For single-select fields: include both `display` and `optionId`
+- For iteration fields: include both `display` and `iterationId`
+- For text/number/date fields: include only `display` (the literal value)
+
+**Gathering style**: Don't present every field one at a time. Instead, list all eligible fields with their types and current options in a single message, and ask the user which ones they'd like to set defaults for. Then gather the values for just those fields.
+
+##### Step D: Assemble the `projectBoard` object
+
+Return a complete `projectBoard` object matching the schema in `references/schema.json`:
+
+```json
+{
+  "name": "BMT Team 2 Board",
+  "number": 123,
+  "nodeId": "PVT_kwHOABC123",
+  "url": "https://github.com/orgs/ORG/projects/123",
+  "owner": "ORG",
+  "ownerType": "organization",
+  "fieldDefaults": {
+    "PVTSSF_field1": {
+      "fieldName": "Status",
+      "value": { "display": "Backlog", "optionId": "opt_abc123" }
+    },
+    "PVTSSF_field2": {
+      "fieldName": "Priority",
+      "value": { "display": "High", "optionId": "opt_def456" }
+    }
+  }
+}
+```
+
+---
 
 ### Step 3: Gather Information
 
@@ -286,30 +382,21 @@ Present the composed issue to the user for review:
 **Title**: [composed title]
 **Labels**: label1, label2, label3
 **Assignees**: @user1, @user2
-**Project**: [project board name] → [status]
+**Project**: [project board name] (Status: Backlog, Priority: High, ...)   ← only if config.projectBoard is set
 
 **Body**:
 [rendered body preview]
 ```
 
+- If `config.projectBoard` is set, display the project name. If `config.projectBoard.fieldDefaults` contains entries, list the default field values that will be applied (e.g., "Status: Backlog, Priority: High").
+- If `config.projectBoard` is `null` or missing, omit the **Project** line entirely.
+
 Ask for confirmation or edits. If the user requests changes, apply them and re-preview.
 
 ### Step 6: Create Issue
 
-Create the issue using the detected GitHub method:
+Create the issue using `gh issue create`:
 
-**If MCP**: Use `issue_write`:
-```
-method: create
-owner: <config.repository.owner>
-repo: <config.repository.repo>
-title: <composed title>
-body: <composed body>
-labels: <label array>
-assignees: <assignee array>
-```
-
-**If CLI**: Use `gh issue create`:
 ```bash
 gh issue create \
   --repo <config.repository.owner>/<config.repository.repo> \
@@ -334,11 +421,7 @@ gh issue create \
 
 ### Step 7: Post-Creation
 
-Extract the issue URL from the creation response:
-- **If MCP**: Get the URL from the response payload (e.g., `html_url` field)
-- **If CLI**: The `gh issue create` command prints the issue URL to stdout
-
-**Always display the issue URL to the user** as a clickable link, regardless of whether `config.postCreation` is configured. This is the minimum required output on success.
+The `gh issue create` command prints the issue URL to stdout. **Always display the issue URL to the user** as a clickable link, regardless of whether `config.postCreation` is configured. This is the minimum required output on success.
 
 If `config.postCreation.displayFormat` is defined, also render it by substituting `{issueNumber}` and `{issueUrl}` with actual values.
 
@@ -385,7 +468,7 @@ If syncing configs from GitHub fails (during initial setup or manual sync):
 - **If `.cache/` exists with files**: Warn the user that the sync failed, but continue using the existing cached configs. Suggest retrying later.
 - **If `.cache/` is empty or does not exist**: Cannot proceed with GitHub mode. Notify the user and offer to switch to local storage mode.
 - Suggest checking: repository existence, access permissions, branch name
-- If using CLI, suggest `gh auth status` to verify authentication
+- Suggest `gh auth status` to verify authentication
 
 ### Empty config directory
 If the config directory (`.local/` or `.cache/`) exists but contains no `.json` config files:
@@ -407,10 +490,10 @@ If a cached template file in `.cache/templates/` fails to parse:
 - If the re-fetch also fails, fall back to the template fetch failure handling below
 
 ### Template fetch failure
-If the template fetch fails (MCP `get_file_contents` or `gh api`) and no valid cache exists:
+If the template fetch fails (`gh api`) and no valid cache exists:
 - Notify the user that the template could not be fetched
 - Suggest checking repository access permissions
-- If using CLI, suggest running `gh auth status` to verify authentication
+- Suggest running `gh auth status` to verify authentication
 - Offer to create the issue manually without template structure
 
 ### JSON config parse failure
@@ -419,11 +502,11 @@ If a template config file is malformed:
 - Notify the user which config failed to parse
 
 ### Issue creation failure
-If issue creation fails (MCP `issue_write` or `gh issue create`):
+If `gh issue create` fails:
 1. Stop the operation immediately
 2. Notify the user of the failure
 3. Provide context about potential causes: authentication token issues, permissions, rate limits, invalid repository access
-4. If using CLI, include the stderr output from the `gh` command for diagnostics
+4. Include the stderr output from the `gh` command for diagnostics
 5. Offer to display the composed issue body so the user can create it manually
 
 ---
@@ -440,26 +523,16 @@ To add support for a new issue type, create a new `.json` config file following 
 4. Set `templateSource.path` to the repo-relative path of the GitHub issue template
 5. Set `templateSource.format` to `yml` or `md` based on the template type
 6. Define `triggers.keywords` for automatic template matching
-7. Add any `fieldDefaults`, `fieldSkipConditions`, label rules, and formatting overrides
-8. No changes to this SKILL.md file are needed
+7. **Prompt for a default project board**: Run the [Project Gathering](#project-gathering) flow to populate `projectBoard`. If the user declines, omit the `projectBoard` property.
+8. Add any `fieldDefaults`, `fieldSkipConditions`, label rules, and formatting overrides
+9. No changes to this SKILL.md file are needed
 
 ### GitHub storage (`configStorage.type === "github"`)
 
 1. Compose the config JSON following `references/schema.json`
-2. Write the file to the local cache at `~/.claude/configs/github-issue-from-templates/.cache/<filename>.json` (immediately available for use)
-3. Push to GitHub:
-
-   **If MCP**: Use `create_or_update_file`:
-   ```
-   owner:   <configStorage.owner>
-   repo:    <configStorage.repo>
-   path:    <configStorage.path>/<filename>.json
-   content: <base64-encoded JSON>
-   message: "Add <template-name> template config"
-   branch:  <configStorage.branch>
-   ```
-
-   **If CLI**: Use the GitHub contents API:
+2. **Prompt for a default project board**: Run the [Project Gathering](#project-gathering) flow to populate `projectBoard`. If the user declines, omit the `projectBoard` property.
+3. Write the file to the local cache at `~/.claude/configs/github-issue-from-templates/.cache/<filename>.json` (immediately available for use)
+4. Push to GitHub:
    ```bash
    gh api repos/<owner>/<repo>/contents/<path>/<filename>.json \
      --method PUT \
@@ -468,8 +541,8 @@ To add support for a new issue type, create a new `.json` config file following 
      --field content=$(echo '<JSON content>' | base64)
    ```
 
-4. If the push fails, the config is still saved locally in `.cache/` — warn the user to sync later once the issue is resolved
-5. No changes to this SKILL.md file are needed
+5. If the push fails, the config is still saved locally in `.cache/` — warn the user to sync later once the issue is resolved
+6. No changes to this SKILL.md file are needed
 
 ---
 
@@ -483,28 +556,11 @@ Read, edit, and overwrite the `.json` file in `~/.claude/configs/github-issue-fr
 
 1. **Edit the file** in the local cache at `~/.claude/configs/github-issue-from-templates/.cache/<filename>.json`
 2. **Fetch the current SHA** from GitHub:
-
-   **If MCP**: Use `get_file_contents` — the response includes the `sha` field.
-
-   **If CLI**:
    ```bash
    gh api repos/<owner>/<repo>/contents/<path>/<filename>.json?ref=<branch> --jq '.sha'
    ```
 
 3. **Push the updated file** to GitHub with the SHA:
-
-   **If MCP**: Use `create_or_update_file` with the `sha` parameter:
-   ```
-   owner:   <configStorage.owner>
-   repo:    <configStorage.repo>
-   path:    <configStorage.path>/<filename>.json
-   content: <base64-encoded updated JSON>
-   message: "Update <template-name> template config"
-   branch:  <configStorage.branch>
-   sha:     <current SHA>
-   ```
-
-   **If CLI**:
    ```bash
    gh api repos/<owner>/<repo>/contents/<path>/<filename>.json \
      --method PUT \

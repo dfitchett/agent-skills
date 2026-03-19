@@ -60,6 +60,8 @@ Check for the following scopes:
 
 #### Missing scopes — user prompts
 
+> **IMPORTANT**: If any required scopes are missing, you **MUST stop and prompt the user** before continuing the workflow. Do not skip ahead, do not silently note the missing scope — present the options below and **wait for the user to respond** before proceeding to Step 3.
+
 Collect all missing scopes before prompting. Then present options based on what's missing:
 
 **If `repo` is missing** (with or without `project`): The workflow cannot continue. Present only one option — tell the user to fix their permissions and let you know when done:
@@ -75,12 +77,16 @@ If only `repo` is missing (and `project` is present), adjust the command to `gh 
 
 After the user confirms they've run the command, re-run `gh auth status` to verify the scopes are now present. If still missing, notify the user and stop.
 
-**If only `project` is missing**: Present two options:
+**If only `project` is missing**: You **MUST** present both options and **wait for the user's choice** before continuing:
 
 > The `project` scope is needed to assign issues to project boards. You can either:
 >
 > 1. **Fix now** — Run `gh auth refresh -s project` in a separate terminal, then let me know when it's done.
 > 2. **Skip** — Continue without project board support. Created issues will not be added to a project board.
+>
+> Which would you prefer?
+
+Do **not** proceed until the user has responded. Then:
 
 - **If the user chooses option 1**: Wait for confirmation, then re-run `gh auth status` to verify. If still missing, notify the user and offer both options again.
 - **If the user chooses option 2**: Set a `projectScopeAvailable = false` flag for this session. Step 2.5 will check this flag and skip project board operations.

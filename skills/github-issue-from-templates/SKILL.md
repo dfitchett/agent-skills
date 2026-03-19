@@ -35,7 +35,72 @@ This skill creates GitHub issues by dynamically fetching field definitions from 
 
 ## Tool Detection
 
-Before starting the workflow, verify the `gh` CLI is installed and authenticated by running `gh auth status`. If not installed or not authenticated, notify the user that the [`gh` CLI](https://cli.github.com/) is required and stop.
+Before starting the workflow, verify the `gh` CLI is installed, authenticated, and has the required OAuth scopes.
+
+> **Constraint**: This skill must **never** run any `gh auth` command other than `gh auth status`. All `gh auth` subcommands that modify authentication state (`login`, `logout`, `refresh`, `setup-git`, `token`, `switch`) are **off-limits**. When a scope is missing, display the fix command for the user to run themselves — do not execute it.
+
+### 1. Check installation and authentication
+
+Run `gh auth status`. If the CLI is not installed or not authenticated, notify the user that the [`gh` CLI](https://cli.github.com/) is required and stop.
+
+### 2. Verify OAuth scopes
+
+Parse the `gh auth status` output (note: it writes to **stderr**) and extract the token scopes from the `Token scopes:` line.
+
+```bash
+gh auth status 2>&1 | grep -i 'token scopes'
+```
+
+Check for the following scopes:
+
+| Scope | Required | Used for |
+|-------|----------|----------|
+| `repo` | **Always** | Creating issues, reading repository contents (templates, configs) |
+| `project` | **For project boards** | Adding issues to project boards, reading project fields (GraphQL API) |
+
+**If `repo` is missing**: Stop and notify the user. Issue creation will not work without it. Tell the user to run:
+
+```bash
+gh auth refresh -s repo
+```
+
+**If `project` is missing**: Warn the user that project board features (Step 2.5) will not be available. Tell the user to run the following command, then allow the workflow to continue:
+
+```bash
+gh auth refresh -s project
+```
+
+If both scopes are missing, tell the user to run:
+
+```bash
+gh auth refresh -s repo,project
+```
+
+### 3. Suggest hook protection
+
+Check whether the user's global Claude settings (`~/.claude/settings.json`) contain a `PreToolUse` hook that blocks `gh auth` subcommands other than `status`. Look for a hook with `"matcher": "Bash"` whose command references `gh auth` and the blocked subcommands (`login`, `logout`, `refresh`, `setup-git`, `switch`, `token`).
+
+If no such hook is found, suggest that the user add one for hard enforcement. Display the following as a recommendation — **do not write to settings.json directly**:
+
+> **Recommended**: You can add a Claude Code hook to your global settings (`~/.claude/settings.json`) that blocks `gh auth` commands other than `gh auth status`. This prevents any skill or agent from modifying your GitHub auth state. To set this up, run `/update-config` and ask to add the hook, or add the following to your `settings.json` manually:
+>
+> ```json
+> "hooks": {
+>   "PreToolUse": [
+>     {
+>       "matcher": "Bash",
+>       "hooks": [
+>         {
+>           "type": "command",
+>           "command": "cmd=$(echo \"$CLAUDE_TOOL_INPUT\" | jq -r '.command // \"\"'); if echo \"$cmd\" | grep -qE 'gh auth (login|logout|refresh|setup-git|switch|token)'; then echo 'BLOCKED: Only gh auth status is allowed. Run other gh auth commands manually outside of Claude.' >&2; exit 2; fi"
+>         }
+>       ]
+>     }
+>   ]
+> }
+> ```
+
+Only show this suggestion once per session — if the workflow loops back to Tool Detection (e.g., after a retry), skip this step.
 
 All GitHub operations in this skill use the `gh` CLI exclusively.
 
@@ -195,6 +260,8 @@ Parse the markdown body to identify:
 - **Self-verification checklists**: Sections like "Yes, I have" contain items the skill should satisfy automatically
 
 ### Step 2.5: Project Board Check
+
+**Scope gate**: Before proceeding, verify the `project` OAuth scope is available by running `gh auth status 2>&1 | grep -i 'token scopes'` and checking for `project` in the output. If the scope is missing, skip this entire step. Inform the user: "Skipping project board assignment — the `project` OAuth scope is not available. Run `gh auth refresh -s project` to enable this feature." Set `config.projectBoard` to `null` for this session and continue to Step 3.
 
 After selecting a template config, check whether `config.projectBoard` is defined:
 

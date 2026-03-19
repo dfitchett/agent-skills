@@ -58,27 +58,38 @@ Check for the following scopes:
 | `repo` | **Always** | Creating issues, reading repository contents (templates, configs) |
 | `project` | **For project boards** | Adding issues to project boards, reading project fields (GraphQL API) |
 
-**If `repo` is missing**: Stop and notify the user. Issue creation will not work without it. Tell the user to run:
+#### Missing scopes — user prompts
 
-```bash
-gh auth refresh -s repo
-```
+Collect all missing scopes before prompting. Then present options based on what's missing:
 
-**If `project` is missing**: Warn the user that project board features (Step 2.5) will not be available. Tell the user to run the following command, then allow the workflow to continue:
+**If `repo` is missing** (with or without `project`): The workflow cannot continue. Present only one option — tell the user to fix their permissions and let you know when done:
 
-```bash
-gh auth refresh -s project
-```
+> The `repo` scope is required to create issues and read repository contents. Please run the following command in a separate terminal, then let me know when it's done:
+>
+> ```bash
+> gh auth refresh -s repo,project
+> ```
+> _(includes `project` for project board support)_
 
-If both scopes are missing, tell the user to run:
+If only `repo` is missing (and `project` is present), adjust the command to `gh auth refresh -s repo`.
 
-```bash
-gh auth refresh -s repo,project
-```
+After the user confirms they've run the command, re-run `gh auth status` to verify the scopes are now present. If still missing, notify the user and stop.
+
+**If only `project` is missing**: Present two options:
+
+> The `project` scope is needed to assign issues to project boards. You can either:
+>
+> 1. **Fix now** — Run `gh auth refresh -s project` in a separate terminal, then let me know when it's done.
+> 2. **Skip** — Continue without project board support. Created issues will not be added to a project board.
+
+- **If the user chooses option 1**: Wait for confirmation, then re-run `gh auth status` to verify. If still missing, notify the user and offer both options again.
+- **If the user chooses option 2**: Set a `projectScopeAvailable = false` flag for this session. Step 2.5 will check this flag and skip project board operations.
 
 ### 3. Suggest hook protection
 
-Check whether the user's global Claude settings (`~/.claude/settings.json`) contain a `PreToolUse` hook that blocks `gh auth` subcommands other than `status`. Look for a hook with `"matcher": "Bash"` whose command references `gh auth` and the blocked subcommands (`login`, `logout`, `refresh`, `setup-git`, `switch`, `token`).
+Read the user's global Claude settings (`~/.claude/settings.json`) and check whether it contains a `PreToolUse` hook with `"matcher": "Bash"` whose command references `gh auth` and the blocked subcommands (`login`, `logout`, `refresh`, `setup-git`, `switch`, `token`).
+
+If such a hook is already present, skip this step — no suggestion needed.
 
 If no such hook is found, suggest that the user add one for hard enforcement. Display the following as a recommendation — **do not write to settings.json directly**:
 
@@ -261,7 +272,7 @@ Parse the markdown body to identify:
 
 ### Step 2.5: Project Board Check
 
-**Scope gate**: Before proceeding, verify the `project` OAuth scope is available by running `gh auth status 2>&1 | grep -i 'token scopes'` and checking for `project` in the output. If the scope is missing, skip this entire step. Inform the user: "Skipping project board assignment — the `project` OAuth scope is not available. Run `gh auth refresh -s project` to enable this feature." Set `config.projectBoard` to `null` for this session and continue to Step 3.
+**Scope gate**: If the user chose to skip the `project` scope in Step 2 (`projectScopeAvailable = false`), skip this entire step. Set `config.projectBoard` to `null` for this session and continue to Step 3.
 
 After selecting a template config, check whether `config.projectBoard` is defined:
 

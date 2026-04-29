@@ -51,12 +51,14 @@ Parse the `gh auth status` output (note: it writes to **stderr**) and extract th
 gh auth status 2>&1 | grep -i 'token scopes'
 ```
 
+> **GitHub Enterprise hosts**: If the selected template config has `repository.hostname` set (e.g., `va.ghe.com`), check scopes for that host instead by prefixing the command with `GH_HOST=<hostname>`. GHE installations may require different scope names (e.g., `read:project` instead of `project`) — surface whatever the API error response says is missing rather than assuming. Each host has its own token, so verify scopes for the host being used.
+
 Check for the following scopes:
 
 | Scope | Required | Used for |
 |-------|----------|----------|
 | `repo` | **Always** | Creating issues, reading repository contents (templates, configs) |
-| `project` | **For project boards** | Adding issues to project boards, reading project fields (GraphQL API) |
+| `project` (github.com) / `read:project` (GHE) | **For project boards** | Adding issues to project boards, reading project fields (GraphQL API) |
 
 #### Missing scopes — user prompts
 
@@ -244,6 +246,8 @@ Before fetching from GitHub, check the local template cache:
 gh api repos/<config.repository.owner>/<config.repository.repo>/contents/<config.templateSource.path> --jq '.content' | base64 -d
 ```
 
+> **GitHub Enterprise**: If `config.repository.hostname` is set, prefix the command with `GH_HOST=<hostname>` (e.g., `GH_HOST=va.ghe.com gh api repos/...`). Apply this to all `gh` and `gh api` calls in this step.
+
 Then parse based on `config.templateSource.format`:
 
 #### Format: `yml` (Form-based templates)
@@ -259,7 +263,7 @@ Parse the YAML content and extract:
     - `type` — `dropdown`, `input`, `textarea`
     - `attributes.label` — human-readable field name
     - `attributes.description` — help text for the field
-    - `attributes.options` — available choices (for dropdowns)
+    - `attributes.options` — available choices (for dropdowns
     - `attributes.placeholder` — example/guidance text
     - `validations.required` — whether the field must be filled
 
@@ -301,6 +305,8 @@ Ask the user for:
 ##### Step B: Fetch project details and fields via GraphQL
 
 Use the GitHub GraphQL API via `gh api graphql` to fetch the project's node ID, name, and fields in a single query:
+
+> **GitHub Enterprise**: If `config.repository.hostname` is set, prefix this command (and all subsequent project mutations) with `GH_HOST=<hostname>`.
 
 ```bash
 gh api graphql -f query='
@@ -490,6 +496,7 @@ gh issue create \
   --assignee "<assignee1>" --assignee "<assignee2>"
 ```
 - Pass each label and assignee as a separate `--label` / `--assignee` flag
+- **GitHub Enterprise**: If `config.repository.hostname` is set, prefix the command with `GH_HOST=<hostname>` (e.g., `GH_HOST=va.ghe.com gh issue create ...`). The `gh` CLI's `--repo` flag does not switch hosts — only `GH_HOST` does.
 - Use a heredoc for the body if it contains special characters:
   ```bash
   gh issue create \
@@ -604,12 +611,13 @@ To add support for a new issue type, create a new `.json` config file following 
 1. Create a new `.json` file in `~/.claude/configs/github-issue-from-templates/.local/`
 2. Follow the schema defined in `references/schema.json`
 3. Set `repository.owner` and `repository.repo` to the target GitHub repository
-4. Set `templateSource.path` to the repo-relative path of the GitHub issue template
-5. Set `templateSource.format` to `yml` or `md` based on the template type
-6. Define `triggers.keywords` for automatic template matching
-7. **Prompt for a default project board**: Run the [Project Gathering](#project-gathering) flow to populate `projectBoard`. If the user declines, omit the `projectBoard` property.
-8. Add any `fieldDefaults`, `fieldSkipConditions`, label rules, and formatting overrides
-9. No changes to this SKILL.md file are needed
+4. **For GitHub Enterprise**: also set `repository.hostname` (e.g., `"va.ghe.com"`). Omit for github.com.
+5. Set `templateSource.path` to the repo-relative path of the GitHub issue template
+6. Set `templateSource.format` to `yml` or `md` based on the template type
+7. Define `triggers.keywords` for automatic template matching
+8. **Prompt for a default project board**: Run the [Project Gathering](#project-gathering) flow to populate `projectBoard`. If the user declines, omit the `projectBoard` property.
+9. Add any `fieldDefaults`, `fieldSkipConditions`, label rules, and formatting overrides
+10. No changes to this SKILL.md file are needed
 
 ### GitHub storage (`configStorage.type === "github"`)
 

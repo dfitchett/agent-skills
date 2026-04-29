@@ -57,7 +57,11 @@
       "additionalProperties": false,
       "properties": {
         "owner": { "type": "string" },
-        "repo": { "type": "string" }
+        "repo": { "type": "string" },
+        "hostname": {
+          "type": "string",
+          "description": "GitHub hostname for GitHub Enterprise Server installations (e.g., 'va.ghe.com'). Omit for github.com. When set, the skill prefixes gh CLI calls with GH_HOST=<hostname> for both template fetches and issue creation. Project board operations also use this hostname."
+        }
       }
     },
     "templateSource": {

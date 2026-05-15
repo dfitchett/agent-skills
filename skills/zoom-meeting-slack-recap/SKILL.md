@@ -20,8 +20,9 @@ The invoking routine prompt must supply:
 | `meeting_id_or_title` | Either an exact Zoom meeting topic (e.g. `"BMT Team 2 Standup"`) or a numeric Zoom meeting ID. Used to locate the most recent recording. |
 | `slack_channel` | Channel name (e.g. `#bmt-team-2`) or channel ID (e.g. `C0123ABCDEF`) — where the recap is posted. The bot must already be a member. |
 | `slack_bot_token` | A Slack bot token (`xoxb-...`). See **Required bot scopes** below. |
-| `password_prompt_handles` | List of Slack handles (e.g. `["@derek-fitchett", "@yinka"]`) — the people who will be DM'd to ask for the password. Handles must match the Slack workspace's `name` field for each user (the lowercase `@handle`, not the display name). |
-| `password_wait_minutes` *(optional)* | How long to wait for a password reply before falling back to a recording-only post. Defaults to `15`. |
+| `password_protected` *(optional)* | Boolean. `true` (default) means the Zoom recording requires a password to view — the skill will DM the group to collect it. Set to `false` for unprotected recordings; the skill skips the DM/poll step entirely and the recap omits the password line. |
+| `password_prompt_handles` | Required **only when `password_protected: true`**. List of Slack handles (e.g. `["@derek-fitchett", "@yinka"]`) — the people who will be DM'd to ask for the password. Handles must match the Slack workspace's `name` field for each user (the lowercase `@handle`, not the display name). Ignored when `password_protected: false`. |
+| `password_wait_minutes` *(optional)* | How long to wait for a password reply before falling back to a recording-only post. Defaults to `15`. Only used when `password_protected: true`. |
 | `stale_recording_threshold_hours` *(optional)* | If the matched Zoom recording's start time is older than this many hours, exit silently without DMing or posting. Defaults to `4`. Increase for meetings whose recordings frequently take longer to surface, or decrease to be stricter about canceled-meeting noise. |
 | `custom_note` *(optional)* | One-liner prepended above the message body in the recap (e.g. `"Recap for folks who missed today's sync"`). |
 
@@ -65,7 +66,9 @@ Log a one-line note locally (e.g. "Skipping: most recent recording is N hours ol
 
 ### 3. Ask the group for the recording password
 
-Now that a fresh recording is confirmed, run the bundled helper script `ask-slack-password.sh`. It handles auth, paginated handle-to-user-ID resolution, DM open, prompt post, reply polling, HTML-entity decoding, and the timeout follow-up — so the routine LLM does not need to chain ~8 curl calls itself.
+**If `password_protected: false`, skip this entire step.** Set `zoom_password = null` and move directly to step 4. The recap will post without a 🔑 line.
+
+Otherwise (`password_protected: true`, the default), run the bundled helper script `ask-slack-password.sh`. It handles auth, paginated handle-to-user-ID resolution, DM open, prompt post, reply polling, HTML-entity decoding, and the timeout follow-up — so the routine LLM does not need to chain ~8 curl calls itself.
 
 Fetch the script fresh from GitHub each run so updates propagate without redeployment:
 
@@ -140,7 +143,7 @@ The recap has these lines, in order:
 
 📄 <summary-doc-url|*Full summary*>      ← omit if summary not ready
 🎥 <recording-share-url|*Recording*>
-🔑 *Password:* `<zoom_password>`         ← omit if password is null
+🔑 *Password:* `<zoom_password>`         ← omit if password is null (either `password_protected: false`, or prompt timed out)
 ```
 
 Slack link syntax: `<url|display text>` makes the display text clickable while hiding the raw URL. Wrap the password in backticks so characters like `*` or `&` don't trigger Slack formatting.
@@ -184,11 +187,12 @@ The edited body is the full message format above — without the "summary still 
 
 End the routine with a one-line status:
 
-- `Posted full recap to <channel> (ts=<ts>); password from <handle> in <N>s` — happy path
+- `Posted full recap to <channel> (ts=<ts>); password from <handle> in <N>s` — happy path, password-protected recording
+- `Posted full recap to <channel> (ts=<ts>); no password required` — happy path, `password_protected: false`
 - `Posted recording-only to <channel>, edited with summary after <N>m (ts=<ts>); password from <handle>` — summary-poll edit succeeded
 - `Posted recording-only to <channel>, summary never arrived (ts=<ts>); password from <handle>` — summary poll gave up
 - `Posted recap to <channel> without password (ts=<ts>); group DM timed out after <N>m` — password-poll gave up
-- `Skipped: most recent recording is <N>h old (>4h threshold)` — stale guard fired (no DMs sent)
+- `Skipped: most recent recording is <N>h old (threshold: <T>h)` — stale guard fired (no DMs sent)
 - `Failed: <reason>` — anything else
 
 ## Setting up a new recurring routine
@@ -226,6 +230,7 @@ To wire up the first routine that uses this skill:
    - slack_bot_token: pass to bash as the literal string "$RECAP_BOT_TOKEN" — never substitute or log the value
    - password_prompt_handles: ["derek.fitchett"]
    - password_wait_minutes: 15
+   # - password_protected: true              # set false if the recording isn't password-protected (skips the group DM)
    # - stale_recording_threshold_hours: 4   # uncomment to override the default
 
    Tools: Zoom MCP (search_meetings, recordings_list, get_meeting_assets), Bash.

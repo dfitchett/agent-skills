@@ -22,6 +22,7 @@ The invoking routine prompt must supply:
 | `slack_bot_token` | A Slack bot token (`xoxb-...`). See **Required bot scopes** below. |
 | `password_prompt_handles` | List of Slack handles (e.g. `["@derek-fitchett", "@yinka"]`) — the people who will be DM'd to ask for the password. Handles must match the Slack workspace's `name` field for each user (the lowercase `@handle`, not the display name). |
 | `password_wait_minutes` *(optional)* | How long to wait for a password reply before falling back to a recording-only post. Defaults to `15`. |
+| `stale_recording_threshold_hours` *(optional)* | If the matched Zoom recording's start time is older than this many hours, exit silently without DMing or posting. Defaults to `4`. Increase for meetings whose recordings frequently take longer to surface, or decrease to be stricter about canceled-meeting noise. |
 | `custom_note` *(optional)* | One-liner prepended above the message body in the recap (e.g. `"Recap for folks who missed today's sync"`). |
 
 If any required field is missing, stop and report which — do not guess.
@@ -58,16 +59,23 @@ You're looking for the *most recent* recording whose topic or meeting ID matches
 
 ### 2. Apply the stale-recording guard
 
-If the matched recording's `start_time` is **more than 4 hours ago**, exit silently — do not DM anyone and do not post. This prevents stale chatter when a meeting was canceled or rescheduled and the cron routine still fired.
+If the matched recording's `start_time` is **older than `stale_recording_threshold_hours` ago** (default `4`), exit silently — do not DM anyone and do not post. This prevents stale chatter when a meeting was canceled or rescheduled and the cron routine still fired.
 
-Log a one-line note locally (e.g. "Skipping: most recent recording is N hours old") but don't error and don't message Slack.
+Log a one-line note locally (e.g. "Skipping: most recent recording is N hours old (threshold: <T>h)") but don't error and don't message Slack.
 
 ### 3. Ask the group for the recording password
 
-Now that a fresh recording is confirmed, run the bundled helper script `ask-slack-password.sh` (sits alongside this SKILL.md). It handles auth, paginated handle-to-user-ID resolution, DM open, prompt post, reply polling, HTML-entity decoding, and the timeout follow-up — so the routine LLM does not need to chain ~8 curl calls itself.
+Now that a fresh recording is confirmed, run the bundled helper script `ask-slack-password.sh`. It handles auth, paginated handle-to-user-ID resolution, DM open, prompt post, reply polling, HTML-entity decoding, and the timeout follow-up — so the routine LLM does not need to chain ~8 curl calls itself.
+
+Fetch the script fresh from GitHub each run so updates propagate without redeployment:
 
 ```bash
-"$(dirname "$0")/ask-slack-password.sh" \
+SCRIPT=/tmp/ask-slack-password.sh
+curl -sSfL -o "$SCRIPT" \
+  https://raw.githubusercontent.com/dfitchett/agent-skills/main/skills/zoom-meeting-slack-recap/ask-slack-password.sh
+chmod +x "$SCRIPT"
+
+"$SCRIPT" \
   --token "${slack_bot_token}" \
   --handles "${password_prompt_handles_csv}" \
   --meeting-title "${meeting_topic}" \
@@ -77,6 +85,8 @@ Now that a fresh recording is confirmed, run the bundled helper script `ask-slac
 ```
 
 `${password_prompt_handles_csv}` is the input list joined with commas, with or without `@` (e.g. `"derek.fitchett,yinka"`). The script also accepts a `--poll-interval` flag (default 30 seconds) if you need to tune polling.
+
+If you've cloned the repo locally and prefer the on-disk copy, you can also run it as `"$(dirname "$0")/ask-slack-password.sh"` from inside the skill directory — but the GitHub fetch is the canonical path for routines.
 
 **Script exit behavior:**
 - **Exit 0** → stdout contains the captured password (already HTML-decoded). Use it verbatim as `zoom_password`.
@@ -205,14 +215,23 @@ To wire up the first routine that uses this skill:
 5. **Create the routine** using `/schedule` (or `mcp__scheduled-tasks__create_scheduled_task`). The routine prompt should look like:
 
    ```
-   Use the zoom-meeting-slack-recap skill with these inputs:
+   Run the zoom-meeting-slack-recap skill for the Engineering CoP meeting.
+
+   Skill: https://raw.githubusercontent.com/dfitchett/agent-skills/main/skills/zoom-meeting-slack-recap/SKILL.md
+   Fetch via WebFetch (or curl), read it first, then follow its workflow end-to-end.
+
+   Inputs:
    - meeting_id_or_title: "Engineering CoP"
    - slack_channel: "#staff-test"
-   - slack_bot_token: "xoxb-..."
-   - password_prompt_handles: ["@derek-fitchett", "@yinka"]
+   - slack_bot_token: pass to bash as the literal string "$RECAP_BOT_TOKEN" — never substitute or log the value
+   - password_prompt_handles: ["derek.fitchett"]
    - password_wait_minutes: 15
-   - custom_note: "Recap from today's CoP"
+   # - stale_recording_threshold_hours: 4   # uncomment to override the default
+
+   Tools: Zoom MCP (search_meetings, recordings_list, get_meeting_assets), Bash.
    ```
+
+   Store the bot token outside the prompt — e.g. `export RECAP_BOT_TOKEN="xoxb-..."` in `~/.zshenv` (mode 600) so cron/launchd-spawned shells inherit it without the secret appearing in the routine config.
 
 6. **Test it once** by triggering the routine manually after a real meeting — verify the DM arrives, the password is captured, and the recap lands in the channel.
 

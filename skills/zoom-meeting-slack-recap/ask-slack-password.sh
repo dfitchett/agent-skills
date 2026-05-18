@@ -18,9 +18,14 @@ Usage: ask-slack-password.sh \
   --meeting-date <text> \
   --recap-channel <channel name> \
   [--wait-minutes <int, default 15>] \
-  [--poll-interval <int seconds, default 30>]
+  [--poll-interval <int seconds, default 30>] \
+  [--prompt-template <template string>]
 
 Outputs the captured password to stdout, with Slack HTML entities decoded.
+
+--prompt-template overrides the default DM body. Supports placeholders
+{title}, {date}, {channel} — substituted with the corresponding --meeting-title,
+--meeting-date, --recap-channel values before posting.
 USAGE
 }
 
@@ -32,17 +37,19 @@ MEETING_DATE=""
 RECAP_CHANNEL=""
 WAIT_MINUTES=15
 POLL_INTERVAL=30
+PROMPT_TEMPLATE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --token)         TOKEN="$2"; shift 2 ;;
-    --handles)       HANDLES_RAW="$2"; shift 2 ;;
-    --meeting-title) MEETING_TITLE="$2"; shift 2 ;;
-    --meeting-date)  MEETING_DATE="$2"; shift 2 ;;
-    --recap-channel) RECAP_CHANNEL="$2"; shift 2 ;;
-    --wait-minutes)  WAIT_MINUTES="$2"; shift 2 ;;
-    --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
-    -h|--help)       usage; exit 0 ;;
+    --token)           TOKEN="$2"; shift 2 ;;
+    --handles)         HANDLES_RAW="$2"; shift 2 ;;
+    --meeting-title)   MEETING_TITLE="$2"; shift 2 ;;
+    --meeting-date)    MEETING_DATE="$2"; shift 2 ;;
+    --recap-channel)   RECAP_CHANNEL="$2"; shift 2 ;;
+    --wait-minutes)    WAIT_MINUTES="$2"; shift 2 ;;
+    --poll-interval)   POLL_INTERVAL="$2"; shift 2 ;;
+    --prompt-template) PROMPT_TEMPLATE="$2"; shift 2 ;;
+    -h|--help)         usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -126,9 +133,16 @@ fi
 DM_CHANNEL=$(jq -r '.channel.id' <<<"$open_resp")
 
 # --- 4. Post the prompt ---
-prompt_text="👋 About to post the recap for *${MEETING_TITLE}* (held ${MEETING_DATE}) in ${RECAP_CHANNEL}.
+if [ -n "$PROMPT_TEMPLATE" ]; then
+  prompt_text="$PROMPT_TEMPLATE"
+  prompt_text="${prompt_text//\{title\}/$MEETING_TITLE}"
+  prompt_text="${prompt_text//\{date\}/$MEETING_DATE}"
+  prompt_text="${prompt_text//\{channel\}/$RECAP_CHANNEL}"
+else
+  prompt_text="👋 About to post the recap for *${MEETING_TITLE}* (held ${MEETING_DATE}) in ${RECAP_CHANNEL}.
 
 What's the recording password? Reply with *just the password text* — first reply wins."
+fi
 
 jq -n \
   --arg channel "$DM_CHANNEL" \

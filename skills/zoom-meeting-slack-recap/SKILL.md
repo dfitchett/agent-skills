@@ -24,6 +24,8 @@ The invoking routine prompt must supply:
 | `password_prompt_handles` | Required **only when `password_protected: true`**. List of Slack handles (e.g. `["@derek-fitchett", "@yinka"]`) — the people who will be DM'd to ask for the password. Handles must match the Slack workspace's `name` field for each user (the lowercase `@handle`, not the display name). Ignored when `password_protected: false`. |
 | `password_wait_minutes` *(optional)* | How long to wait for a password reply before falling back to a recording-only post. Defaults to `15`. Only used when `password_protected: true`. |
 | `stale_recording_threshold_hours` *(optional)* | If the matched Zoom recording's start time is older than this many hours, exit silently without DMing or posting. Defaults to `4`. Increase for meetings whose recordings frequently take longer to surface, or decrease to be stricter about canceled-meeting noise. |
+| `header_phrasing` *(optional)* | Template for the first line of the recap. Use the placeholder `{title}` for the Zoom meeting topic. Defaults to `"{title} Recap!"`. Example overrides: `"📝 {title} — Summary"`, `"Recap of {title}"`, `"{title} debrief"`. |
+| `password_prompt_phrasing` *(optional)* | Template for the DM that asks recipients for the password. Supports placeholders `{title}` (Zoom topic), `{date}` (human-readable date), `{channel}` (recap channel). Defaults to a one-line ask with "reply with just the password — first reply wins" instructions. Only used when `password_protected: true`. |
 | `custom_note` *(optional)* | One-liner prepended above the message body in the recap (e.g. `"Recap for folks who missed today's sync"`). |
 
 If any required field is missing, stop and report which — do not guess.
@@ -84,10 +86,13 @@ chmod +x "$SCRIPT"
   --meeting-title "${meeting_topic}" \
   --meeting-date "${human_readable_date}" \
   --recap-channel "${slack_channel}" \
-  --wait-minutes "${password_wait_minutes:-15}"
+  --wait-minutes "${password_wait_minutes:-15}" \
+  ${password_prompt_phrasing:+--prompt-template "${password_prompt_phrasing}"}
 ```
 
 `${password_prompt_handles_csv}` is the input list joined with commas, with or without `@` (e.g. `"derek.fitchett,yinka"`). The script also accepts a `--poll-interval` flag (default 30 seconds) if you need to tune polling.
+
+Pass `password_prompt_phrasing` only when overriding the default DM wording. Placeholders `{title}`, `{date}`, and `{channel}` are substituted before the DM is posted.
 
 If you've cloned the repo locally and prefer the on-disk copy, you can also run it as `"$(dirname "$0")/ask-slack-password.sh"` from inside the skill directory — but the GitHub fetch is the canonical path for routines.
 
@@ -135,9 +140,9 @@ Capture the `ts` from the response — needed if you later edit the message.
 The recap has these lines, in order:
 
 ```
-*<Meeting Title> Recap!*
+*<header_phrasing with {title} substituted>*
 [custom_note line, if provided]
-*Meeting:* <human-readable date>, <duration> min
+*Meeting:* <day> <month> <day>, <year> — <h:mm AM/PM> ET / <h:mm AM/PM> PT (<duration> min)
 
 *TLDR:* <Zoom Quick recap, verbatim>     ← omit this block if summary not ready
 
@@ -148,7 +153,9 @@ The recap has these lines, in order:
 
 Slack link syntax: `<url|display text>` makes the display text clickable while hiding the raw URL. Wrap the password in backticks so characters like `*` or `&` don't trigger Slack formatting.
 
-Render the date in the user's local timezone (America/New_York by default) — e.g. `Tue May 14, 11:00 AM ET`.
+**Header:** Substitute `{title}` in `header_phrasing` with the Zoom meeting's `topic` field. Default `"{title} Recap!"` yields e.g. `*Engineering CoP Recap!*`.
+
+**Meeting line / timezone handling:** Convert the recording's UTC `start_time` to both Eastern and Pacific local times and show them on one line — e.g. `Thu May 14, 2026 — 3:56 PM ET / 12:56 PM PT (34 min)`. Use `date -d "<start_time>" -u` plus `TZ=America/New_York date -d "..."` and `TZ=America/Los_Angeles date -d "..."` (or `TZ=… date -j -f` on macOS) to compute each.
 
 When summary is **not** ready, append a footer line:
 
@@ -230,8 +237,10 @@ To wire up the first routine that uses this skill:
    - slack_bot_token: pass to bash as the literal string "$RECAP_BOT_TOKEN" — never substitute or log the value
    - password_prompt_handles: ["derek.fitchett"]
    - password_wait_minutes: 15
-   # - password_protected: true              # set false if the recording isn't password-protected (skips the group DM)
-   # - stale_recording_threshold_hours: 4   # uncomment to override the default
+   # - password_protected: true                                            # set false to skip the group DM
+   # - stale_recording_threshold_hours: 4                                  # override the default
+   # - header_phrasing: "{title} Recap!"                                   # override the recap header
+   # - password_prompt_phrasing: "..."                                     # override the DM wording; supports {title}, {date}, {channel}
 
    Tools: Zoom MCP (search_meetings, recordings_list, get_meeting_assets), Bash.
    ```

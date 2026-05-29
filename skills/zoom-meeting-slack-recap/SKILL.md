@@ -52,6 +52,104 @@ The Slack app powering this skill needs these OAuth bot scopes:
 
 If the bot is missing any scope at runtime, the relevant Slack API call returns `missing_scope` with a list — surface that error verbatim so the user can fix it in the Slack app config and reinstall.
 
+## How the skill talks to Slack (every call inline)
+
+The skill makes **every Slack API call inline with `curl` against `slack.com`**. It does **not** download or execute any bundled helper scripts at runtime. This is intentional and load-bearing: a helper-script approach gets classified by Claude Code's auto-mode classifier as "code from external" with a credential-exfil pathway (`RECAP_BOT_TOKEN` flows through it) and gets denied. Inline curls keep every API request visible in the routine's transcript, auditable per call, and addressed to `slack.com` only.
+
+**Do not re-introduce helper scripts.** If you find a step tedious, factor the prose, not the runtime — the SKILL.md can document patterns once and reference them, but the actual API calls must be made inline.
+
+Common conventions used throughout the steps below:
+
+- **All calls authenticate with** `-H "Authorization: Bearer ${RECAP_BOT_TOKEN}"`. The token is read from the environment — never log or echo it.
+- **POST endpoints** (`chat.postMessage`, `chat.update`, `conversations.open`, `auth.test`) use `--data @file.json` from a `jq`-built payload (`jq -n --arg ...` or `--rawfile` for message bodies). **Never inline JSON with raw shell variable interpolation** — Slack message text routinely contains `&`, `*`, backticks, and newlines that break naive escaping.
+- **GET endpoints** (`*.list`, `*.history`, `*.replies`) use `curl -s -G` with `--data-urlencode key=value`.
+- **Decode Slack HTML entities** in any text Slack returns to you (reply bodies, channel descriptions):
+  ```bash
+  decoded=$(echo "$raw" | sed -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g')
+  ```
+- **Get the bot's own user ID once** at start so the poll loops can ignore the bot's own messages:
+  ```bash
+  bot_user_id=$(curl -s -X POST https://slack.com/api/auth.test \
+    -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" | jq -r '.user_id')
+  ```
+
+### Resolving `prompt_target` once per run
+
+Decide once at the start; the resolved IDs are reused for any/all prompts.
+
+**Handles mode** (`prompt_target` is an array like `["derek.fitchett", "russ.jennings"]`):
+
+1. Paginate `users.list` (`limit=200` + `next_cursor`) until you find each handle's user ID. Match case-insensitively on the `.name` field. Fail loudly if any handle matches 0 users or more than 1.
+2. Open the multi-person DM with the comma-joined user IDs:
+   ```bash
+   jq -n --arg users "U01ABCD,U02EFGH" '{users: $users}' > /tmp/open.json
+   POST_CHANNEL=$(curl -s -X POST https://slack.com/api/conversations.open \
+     -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" \
+     -H "Content-Type: application/json; charset=utf-8" \
+     --data @/tmp/open.json | jq -r '.channel.id')
+   ```
+3. `THREAD_PARENT=""` — handles mode polls DM history with `oldest=<prompt_ts>`, not threads.
+
+**Channel mode** (`prompt_target` is `"#channel-name"` or a raw `"C0123ABCD"`/`"G0123ABCD"` ID):
+
+1. If the value starts with `#`, paginate `conversations.list` (`types=public_channel,private_channel`) and match `.channels[].name` to get the ID. Otherwise the ID is the value itself.
+2. `POST_CHANNEL = <resolved channel ID>`.
+3. `THREAD_PARENT` is set per-prompt to that prompt's `ts` (so replies stay in-thread).
+
+### Prompt-and-poll pattern
+
+Used by step 3 (password), step 4a/4b (presenter handle), and step 4c (TLDR). Given a `QUESTION` string and the resolved `POST_CHANNEL`:
+
+```bash
+# 1. Post the question
+jq -n --arg channel "$POST_CHANNEL" --arg text "$QUESTION" \
+  '{channel: $channel, unfurl_links: false, text: $text}' > /tmp/q.json
+PROMPT_TS=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+  -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data @/tmp/q.json | jq -r '.ts')
+# Channel mode only: THREAD_PARENT="$PROMPT_TS"
+
+# 2. Poll every 30s for the first non-bot reply, up to prompt_wait_minutes
+max_iter=$(( ${prompt_wait_minutes:-15} * 60 / 30 ))
+reply_raw=""
+for i in $(seq 1 "$max_iter"); do
+  if [ -n "$THREAD_PARENT" ]; then
+    # Channel mode: thread replies
+    curl -s -G https://slack.com/api/conversations.replies \
+      -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" \
+      --data-urlencode "channel=$POST_CHANNEL" \
+      --data-urlencode "ts=$THREAD_PARENT" \
+      --data-urlencode "limit=20" > /tmp/h.json
+    reply_raw=$(jq -r --arg bot "$bot_user_id" --arg parent "$THREAD_PARENT" \
+      '[.messages[]? | select(.user != $bot and .ts != $parent and (.text // "") != "")] | sort_by(.ts) | .[0] // empty | .text' \
+      /tmp/h.json)
+  else
+    # Handles mode: DM history newer than the prompt
+    curl -s -G https://slack.com/api/conversations.history \
+      -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" \
+      --data-urlencode "channel=$POST_CHANNEL" \
+      --data-urlencode "oldest=$PROMPT_TS" \
+      --data-urlencode "limit=20" > /tmp/h.json
+    reply_raw=$(jq -r --arg bot "$bot_user_id" \
+      '[.messages[]? | select(.user != $bot and (.text // "") != "")] | sort_by(.ts) | .[0] // empty | .text' \
+      /tmp/h.json)
+  fi
+  if [ -n "$reply_raw" ] && [ "$reply_raw" != "null" ]; then break; fi
+  reply_raw=""
+  sleep 30
+done
+
+# 3. Decode HTML entities; reply is empty on timeout
+if [ -n "$reply_raw" ]; then
+  reply=$(echo "$reply_raw" | sed -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g')
+else
+  reply=""
+fi
+```
+
+On timeout (empty `reply`), optionally post a short follow-up via `chat.postMessage` so recipients aren't left hanging — same endpoint, same `POST_CHANNEL`, add `thread_ts=$THREAD_PARENT` in channel mode.
+
 ## Workflow
 
 ### 1. Locate the meeting's most recent recording
@@ -79,37 +177,12 @@ Log a one-line note locally (e.g. "Skipping: most recent recording is N hours ol
 
 **If `password_protected: false`, skip this entire step.** Set `zoom_password = null` and move on. The recap will post without a 🔑 line.
 
-Otherwise, run the bundled `prompt-target.sh` helper. It handles auth, paginated handle-to-user-ID resolution (handles mode), channel resolution (channel mode), question post, reply polling (DM history in handles mode; thread replies in channel mode), HTML-entity decoding, and timeout follow-up.
+Otherwise, run the **prompt-and-poll pattern** defined above with:
 
-Fetch the script fresh from GitHub each run so updates propagate without redeployment:
+- `QUESTION = "👋 About to post the recap for *${meeting_topic}* (held ${human_readable_date}) in ${slack_channel}. What's the recording password? Reply with *just the password text* — first reply wins."`
+- Timeout follow-up: `"No password reply received — posting the recap without it."`
 
-```bash
-SCRIPT=/tmp/prompt-target.sh
-curl -sSfL -o "$SCRIPT" \
-  https://raw.githubusercontent.com/dfitchett/agent-skills/main/skills/zoom-meeting-slack-recap/prompt-target.sh
-chmod +x "$SCRIPT"
-
-# Render prompt_target as the script expects:
-#   - array of handles → comma-separated string ("derek.fitchett,yinka")
-#   - channel name/ID → pass through ("#bmt-team-2" or "C0123ABCD")
-PROMPT_TARGET="<rendered target>"
-QUESTION="👋 About to post the recap for *${meeting_topic}* (held ${human_readable_date}) in ${slack_channel}. What's the recording password? Reply with *just the password text* — first reply wins."
-
-zoom_password=$("$SCRIPT" \
-  --token "${slack_bot_token}" \
-  --target "$PROMPT_TARGET" \
-  --question "$QUESTION" \
-  --wait-minutes "${prompt_wait_minutes:-15}" \
-  --followup "No password reply received — posting the recap without it.") \
-  || zoom_password=""
-```
-
-**Script exit behavior** (same for every prompt):
-- **Exit 0** → stdout = the reply text, already HTML-decoded. Use verbatim.
-- **Exit 1** → no reply within `--wait-minutes`. The script has already posted the `--followup` if provided. Continue with the empty value (the routine adapts — see below).
-- **Exit 2** → config/auth error (bad token, missing scope, unresolvable handle/channel). Stderr explains; abort.
-
-If `zoom_password` is empty after this step, the recap will post without the 🔑 line.
+The decoded `reply` becomes `zoom_password`. If empty (timeout), continue with `zoom_password=""` — the recap will post without the 🔑 line. If the calls return `missing_scope`, `not_in_channel`, or similar, surface the error verbatim and abort.
 
 ### 4. Assemble the TLDR
 
@@ -137,46 +210,33 @@ Otherwise (summary not ready or empty), fall through to 4b.
 
 Otherwise (no usable transcript either), fall through to 4c.
 
-**4c. Ask `prompt_target` for the TLDR directly (last resort, REQUIRED when 4a and 4b both fail).** When neither a Zoom AI summary NOR a usable transcript exists (e.g. recording still processing audio, or AI Companion wasn't enabled, or transcript permission missing), the routine **must** prompt the human via `prompt_target` rather than posting a TLDR-less recap. Do not skip this step:
+**4c. Ask `prompt_target` for the TLDR directly (last resort, REQUIRED when 4a and 4b both fail).** When neither a Zoom AI summary NOR a usable transcript exists (e.g. recording still processing audio, or AI Companion wasn't enabled, or transcript permission missing), the routine **must** prompt the human via `prompt_target` rather than posting a TLDR-less recap. Do not skip this step.
 
-```bash
-QUESTION="🧠 I couldn't find a Zoom AI summary or transcript for *${meeting_topic}* (held ${human_readable_date}). What should the TLDR for the recap in ${slack_channel} say? Reply with the TLDR text — first reply wins."
+Run the **prompt-and-poll pattern** with:
 
-tldr=$("$SCRIPT" \
-  --token "${slack_bot_token}" \
-  --target "$PROMPT_TARGET" \
-  --question "$QUESTION" \
-  --wait-minutes "${prompt_wait_minutes:-15}" \
-  --followup "No TLDR reply received — posting the recap without a TLDR block.") \
-  || tldr=""
-```
+- `QUESTION = "🧠 I couldn't find a Zoom AI summary or transcript for *${meeting_topic}* (held ${human_readable_date}). What should the TLDR for the recap in ${slack_channel} say? Reply with the TLDR text — first reply wins."`
+- Timeout follow-up: `"No TLDR reply received — posting the recap without a TLDR block."`
 
-The reply text is the TLDR verbatim (treat any `<@U…>` mentions the user includes as intentional). No presenter prompt in this branch — the user-supplied TLDR text is final. If `tldr` is empty (timeout), post without the TLDR block. Status note: `user-supplied TLDR` (or `no TLDR available` on timeout).
+The decoded `reply` is the TLDR text verbatim (treat any `<@U…>` mentions the replier includes as intentional). No presenter prompt in this branch — the user-supplied TLDR is final. If `reply` is empty (timeout), post without the TLDR block. Status note: `user-supplied TLDR` (or `no TLDR available` on timeout).
 
 #### Asking for the presenter handle (used by 4a and 4b)
 
-```bash
-QUESTION="🎤 Who presented at *${meeting_topic}* on ${human_readable_date}? Reply with their Slack handle (e.g. \`@aaron.ponce\`) so I can mention them in the recap. Reply \`none\` if there was no single presenter."
+Run the **prompt-and-poll pattern** with:
 
-presenter_reply=$("$SCRIPT" \
-  --token "${slack_bot_token}" \
-  --target "$PROMPT_TARGET" \
-  --question "$QUESTION" \
-  --wait-minutes "${prompt_wait_minutes:-15}" \
-  --followup "No presenter handle reply — generating TLDR without an @-mention.") \
-  || presenter_reply=""
-```
+- `QUESTION = "🎤 Who presented at *${meeting_topic}* on ${human_readable_date}? Reply with their Slack handle (e.g. \\`@aaron.ponce\\`) so I can mention them in the recap. Reply \\`none\\` if there was no single presenter."`
+- Timeout follow-up: `"No presenter handle reply — generating TLDR without an @-mention."`
 
-**Resolving the reply to a user ID:**
-- If `presenter_reply` is empty, `none`, `n/a`, or `-` (case-insensitive): skip the mention.
+Then resolve the decoded `reply` to a user ID:
+
+- If `reply` is empty, `none`, `n/a`, or `-` (case-insensitive): skip the mention.
 - If it contains `<@U…>` (a real Slack mention pasted by the replier): extract the user ID with `grep -oE '<@U[A-Z0-9]+>'`.
-- Otherwise: strip leading `@`, lowercase, look up via paginated `users.list` matching the `.name` field. Fail soft — if no unique match, log a note and skip the mention rather than aborting.
+- Otherwise: strip leading `@`, lowercase, look up via the same paginated `users.list` you already used to resolve `prompt_target` (cache the result — don't paginate twice in one run). Fail soft — if no unique match, log a note and skip the mention rather than aborting.
 
 Once resolved, the presenter's `<@U…>` is substituted into the generated TLDR before assembling the message.
 
 ### 5. Build and post the recap — exactly once
 
-Assemble the full message body, write it to a temp file, and post it **one time** with the bundled `post-recap.sh` helper. Do not call `chat.postMessage` directly, and never post more than once.
+Assemble the full message body and post it **one time** via a single inline `chat.postMessage` call (see "How the skill talks to Slack" above). Never post more than once and never `chat.update` to amend it — the gather-everything-then-post-once invariant is non-negotiable.
 
 #### Message format
 
@@ -202,7 +262,7 @@ Slack link syntax: `<url|display text>` makes the display text clickable while h
 
 #### Posting
 
-Write the assembled body to a file, then post once:
+Write the assembled body to a file, then make a single inline `chat.postMessage` call. `jq --rawfile` reads the body as one string and escapes it correctly, so any character in the body (`&`, `*`, backticks, newlines) survives without manual escaping.
 
 ```bash
 RECAP_FILE=$(mktemp)
@@ -210,21 +270,25 @@ cat > "$RECAP_FILE" <<'BODY'
 <the assembled message text>
 BODY
 
-ts=$(/path/to/post-recap.sh \
-  --token "${slack_bot_token}" \
-  --channel "${slack_channel}" \
-  --text-file "$RECAP_FILE")
+jq -n \
+  --arg channel "${slack_channel}" \
+  --rawfile text "$RECAP_FILE" \
+  '{channel: $channel, text: $text, unfurl_links: false, unfurl_media: false}' \
+  > /tmp/recap-payload.json
+
+resp=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+  -H "Authorization: Bearer ${RECAP_BOT_TOKEN}" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data @/tmp/recap-payload.json)
+
+if [ "$(jq -r '.ok' <<<"$resp")" != "true" ]; then
+  echo "chat.postMessage failed: $(jq -r '.error // \"unknown\"' <<<"$resp")" >&2
+  exit 1
+fi
+ts=$(jq -r '.ts' <<<"$resp")
 ```
 
-`post-recap.sh` builds the JSON with `jq --rawfile`, so any characters in the body (`&`, `*`, backticks, newlines) are escaped safely — write the literal message, don't pre-escape. It posts exactly once and prints the message `ts` on success (exit 0), or an error on stderr (exit 1 = Slack API failure, exit 2 = config error).
-
-For a local routine, reference the script at its on-disk path. For a remote routine, fetch it first the same way as `prompt-target.sh`:
-
-```bash
-curl -sSfL -o /tmp/post-recap.sh \
-  https://raw.githubusercontent.com/dfitchett/agent-skills/main/skills/zoom-meeting-slack-recap/post-recap.sh
-chmod +x /tmp/post-recap.sh
-```
+Single post, no `chat.update`, no retry, no follow-up post in the recap channel. Capture `ts` for the status line in step 6 only.
 
 ### 6. Report what happened
 
